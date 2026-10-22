@@ -1,0 +1,2 @@
+﻿PASS: window initialization, automatic settings save, settings roundtrip across restart, cached preset, corrupt settings preservation/recovery, embedded runtime, INI, analyze, save, exact backup, CRLF, backup exclusion, idempotence.
+Test folder: C:\Users\d.grebenkin\AppData\Local\Temp\SQLAtelier-test-2ab60ff6f6a54fe5b8d067b3d95b31cb

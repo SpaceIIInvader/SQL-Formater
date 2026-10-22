@@ -1,0 +1,46 @@
+const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path'), assert = require('node:assert/strict');
+const { analyze, save, decode, encode } = require('../Исходники/Ядро/desktop-worker.cjs');
+(async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sql-atelier-worker-test-'));
+  const presetText = await fs.readFile(path.join(__dirname, '../Пресеты/preset_ibeexpert.ini'), 'utf8');
+  await fs.mkdir(path.join(root, 'nested')); await fs.mkdir(path.join(root, '.git'));
+  const source = "SELECT a,b FROM t WHERE a=1 AND b='Русский текст';\r\n";
+  await fs.writeFile(path.join(root, 'one.sql'), Buffer.concat([Buffer.from([239,187,191]), Buffer.from(source)]));
+  await fs.writeFile(path.join(root, 'nested', 'two.SQL'), encode(source, { encoding: 'windows-1251', bom: Buffer.alloc(0) }));
+  await fs.writeFile(path.join(root, 'broken.sql'), "select 'unclosed");
+  await fs.writeFile(path.join(root, 'notes.txt'), source);
+  await fs.writeFile(path.join(root, '.git', 'ignored.sql'), source);
+  let plan = await analyze({ folder: root, presetText, recursive: false });
+  assert.equal(plan.rows.length, 2); assert.equal(plan.rows.filter(r => r.status === 'error').length, 1);
+  console.log('OK nonrecursive, SQL-only, syntax errors isolated');
+  plan = await analyze({ folder: root, presetText, recursive: true });
+  assert.equal(plan.rows.length, 3);
+  const two = plan.rows.find(r => r.relative.endsWith('two.SQL'));
+  assert.equal(two.encoding, 'windows-1251'); assert.equal(decode(Buffer.from(two.data, 'base64')).text.includes('Русский текст'), true);
+  const one = plan.rows.find(r => r.relative === 'one.sql');
+  assert.deepEqual(Array.from(Buffer.from(one.data, 'base64').subarray(0,3)), [239,187,191]);
+  assert.ok(one.preview.includes('\r\n')); assert.ok(!one.preview.replace(/\r\n/g, '').includes('\n'));
+  console.log('OK recursion, UTF-8 BOM, CRLF and Windows-1251 preservation');
+  const bytes = await fs.readFile(path.join(root, 'one.sql'));
+  const saved = await save({ root, rows: plan.rows }); assert.equal(saved.saved, 2);
+  assert.deepEqual(await fs.readFile(path.join(saved.backup, 'one.sql')), bytes);
+  assert.equal(await fs.readFile(path.join(root, 'broken.sql'), 'utf8'), "select 'unclosed");
+  const second = await analyze({ folder: root, presetText, recursive: true });
+  assert.equal(second.rows.length, 3); assert.equal(second.rows.filter(r => r.status === 'changed').length, 0);
+  console.log('OK save, byte-exact backup, backup exclusion, idempotence, broken file untouched');
+  await fs.writeFile(path.join(root, 'conflict.sql'), 'SELECT b,a FROM t;');
+  const conflicted = await analyze({ folder: root, presetText, recursive: true });
+  await fs.writeFile(path.join(root, 'conflict.sql'), '-- Changed externally\nselect 99;');
+  const failed = await save({ root, rows: conflicted.rows }); assert.equal(failed.saved, 0); assert.match(failed.rows[0].message, /изменился/);
+  assert.equal(await fs.readFile(path.join(root, 'conflict.sql'), 'utf8'), '-- Changed externally\nselect 99;');
+  console.log('OK concurrent edits are not overwritten');
+  const traversal = await save({ root, rows: [{ status: 'changed', relative: '../outside.sql', data: '', originalHash: '' }] });
+  assert.equal(traversal.saved, 0); assert.match(traversal.rows[0].message, /вне/);
+  console.log('OK path traversal rejected');
+  for (const encoding of ['utf-16le', 'utf-16be']) {
+    const bom = Buffer.from(encoding === 'utf-16le' ? [255,254] : [254,255]);
+    assert.equal(decode(encode(source, { encoding, bom })).text, source);
+  }
+  console.log('OK UTF-16 LE/BE roundtrip');
+  console.log('Desktop worker checks passed. Test files: ' + root);
+})().catch(e => { console.error(e); process.exitCode = 1; });
