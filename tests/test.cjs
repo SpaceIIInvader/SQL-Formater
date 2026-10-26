@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const { format, lex, parseIni } = require('../Исходники/Ядро/formatter.js');
-const preset = parseIni(fs.readFileSync(__dirname + '/../Пресеты/preset_ibeexpert.ini', 'utf8')).settings;
+const { format, lex, parseIni } = require('../shared/formatter.js');
+const preset = parseIni(fs.readFileSync(__dirname + '/../presets/preset_ibeexpert.ini', 'utf8')).settings;
 let count = 0;
 function test(name, fn) { fn(); count++; console.log('OK ' + name); }
 function fmt(sql, settings = preset) { return format(sql, settings).sql; }

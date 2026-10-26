@@ -112,14 +112,21 @@ async function save(request) {
   }
   return { rows, backup, saved };
 }
-module.exports = { analyze, save, decode, encode };
+function formatText(request) {
+  if (typeof request.text !== 'string') throw new Error('Ожидается текст SQL.');
+  const { settings, warnings } = parseIni(request.presetText);
+  const options = request.caseMode === undefined || request.caseMode === null ? {} : { caseMode: request.caseMode };
+  const result = format(request.text, settings, options);
+  return { sql: result.sql, warnings, unsupported: result.unsupported };
+}
+module.exports = { analyze, save, decode, encode, formatText };
 if (require.main === module) {
   let input = ''; process.stdin.setEncoding('utf8');
   process.stdin.on('data', chunk => { input += chunk; });
   process.stdin.on('end', async () => {
     try {
       const request = JSON.parse(input);
-      const result = request.operation === 'analyze' ? await analyze(request) : request.operation === 'save' ? await save(request) : (() => { throw new Error('Неизвестная операция.'); })();
+      const result = request.operation === 'format' ? formatText(request) : request.operation === 'analyze' ? await analyze(request) : request.operation === 'save' ? await save(request) : (() => { throw new Error('Неизвестная операция.'); })();
       process.stdout.write(JSON.stringify({ ok: true, result }));
     } catch (e) { process.stdout.write(JSON.stringify({ ok: false, error: e.message })); process.exitCode = 1; }
   });

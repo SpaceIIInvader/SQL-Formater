@@ -1,15 +1,16 @@
-$ErrorActionPreference = 'Stop'
-$projectRoot = Split-Path -Parent $PSScriptRoot
-$kernelFolder = Join-Path $projectRoot 'Исходники\Ядро'
-$desktopSource = Join-Path $projectRoot 'Исходники\Windows\Desktop.cs'
+﻿$ErrorActionPreference = 'Stop'
+$desktopRoot = Split-Path -Parent $PSScriptRoot
+$projectRoot = Split-Path -Parent $desktopRoot
+$kernelFolder = Join-Path $projectRoot 'shared'
+$desktopSource = Join-Path $projectRoot 'desktop\src\Desktop.cs'
 $formatterSource = Join-Path $kernelFolder 'formatter.js'
 $workerSource = Join-Path $kernelFolder 'desktop-worker.cjs'
-$presetFile = Join-Path $projectRoot 'Пресеты\preset_ibeexpert.ini'
-$licenseFile = Join-Path $projectRoot 'Лицензии\node-license.txt'
+$presetFile = Join-Path $projectRoot 'presets\preset_ibeexpert.ini'
+$licenseFile = Join-Path $projectRoot 'licenses\node-license.txt'
 $runtimeArchive = Join-Path $PSScriptRoot 'node.gz'
 $buildInfo = Join-Path $PSScriptRoot 'BuildInfo.cs'
 $builtExe = Join-Path $PSScriptRoot 'SQLAtelier.build.exe'
-$applicationExe = Join-Path $projectRoot 'SQLAtelier.exe'
+$applicationExe = Join-Path $desktopRoot 'SQLAtelier.exe'
 $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
 $nodeHash = (Get-FileHash -LiteralPath $nodePath -Algorithm SHA256).Hash
 if (!(Test-Path -LiteralPath $licenseFile)) { throw 'Node.js license file is missing' }

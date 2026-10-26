@@ -1,11 +1,11 @@
 SQL Atelier — локальный форматтер Firebird SQL
 
 ЗАПУСК
-Откройте Исходники\Браузер\index.html двойным щелчком. Интернет, сервер и установка библиотек не нужны.
-Сохраняйте структуру папок «Исходники», «Пресеты» и «Лицензии».
+Откройте website\index.html двойным щелчком. Интернет, сервер и установка библиотек не нужны.
+Сохраняйте структуру папок website, shared, presets и licenses.
 
 Дополнительный вариант через локальный сервер (если установлен Node.js):
-  node "Исходники\Браузер\server.cjs"
+  node "website\server.cjs"
 Затем откройте http://127.0.0.1:8765 . Остановка сервера — Ctrl+C.
 
 РАБОТА
@@ -46,9 +46,9 @@ https://ibexpert.com/docu/doku.php?id=02-ibexpert:02-07-ibexpert-options-menu:co
 SQL не выполняется и не передаётся по сети. Исходники локальны.
 
 Автоматические проверки (Node.js):
-  node "Тесты\test.cjs"
+  node "tests\test.cjs"
 Проверка также на вашем файле:
-  node test.cjs "C:\путь\package.sql"
+  node tests/test.cjs "C:\путь\package.sql"
 
 ФАЙЛЫ
 index.html — интерфейс

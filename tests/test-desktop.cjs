@@ -1,8 +1,8 @@
 const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path'), assert = require('node:assert/strict');
-const { analyze, save, decode, encode } = require('../Исходники/Ядро/desktop-worker.cjs');
+const { analyze, save, decode, encode } = require('../shared/desktop-worker.cjs');
 (async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sql-atelier-worker-test-'));
-  const presetText = await fs.readFile(path.join(__dirname, '../Пресеты/preset_ibeexpert.ini'), 'utf8');
+  const presetText = await fs.readFile(path.join(__dirname, '../presets/preset_ibeexpert.ini'), 'utf8');
   await fs.mkdir(path.join(root, 'nested')); await fs.mkdir(path.join(root, '.git'));
   const source = "SELECT a,b FROM t WHERE a=1 AND b='Русский текст';\r\n";
   await fs.writeFile(path.join(root, 'one.sql'), Buffer.concat([Buffer.from([239,187,191]), Buffer.from(source)]));

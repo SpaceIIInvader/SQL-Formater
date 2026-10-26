@@ -6,8 +6,8 @@ const routes = {
   'index.html': path.join(__dirname, 'index.html'),
   'app.js': path.join(__dirname, 'app.js'),
   'preset.js': path.join(__dirname, 'preset.js'),
-  'Ядро/formatter.js': path.join(__dirname, '../Ядро/formatter.js'),
-  'preset_ibeexpert.ini': path.join(__dirname, '../../Пресеты/preset_ibeexpert.ini')
+  'shared/formatter.js': path.join(__dirname, '../shared/formatter.js'),
+  'preset_ibeexpert.ini': path.join(__dirname, '../presets/preset_ibeexpert.ini')
 };
 const server = http.createServer((req, res) => {
   let pathname;

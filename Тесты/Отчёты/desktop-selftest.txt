@@ -1,2 +1,0 @@
-﻿PASS: window initialization, embedded runtime, INI, analyze, save, exact backup, CRLF, backup exclusion, idempotence.
-Test folder: C:\Users\d.grebenkin\AppData\Local\Temp\SQLAtelier-test-f076ebc6f32049599450c63a05e421b4

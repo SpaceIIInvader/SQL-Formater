@@ -1,1 +1,0 @@
-public static class BuildInfo { public const string NodeHash = "3602F2BB1A10F2CBAB4C36886218A33C1AB3DB87290E73B033C46C77147D0237"; public const string Version = "DD6A78C8E5-29A4BBA067"; }

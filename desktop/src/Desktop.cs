@@ -5,6 +5,7 @@ using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -18,6 +19,7 @@ public class Row {
     public string source { get; set; } public string preview { get; set; }
 }
 public class Plan {
+    public string sql { get; set; }
     public string root { get; set; } public List<Row> rows { get; set; }
     public string backup { get; set; } public int saved { get; set; }
     public List<string> unsupported { get; set; } public List<string> warnings { get; set; }
@@ -125,7 +127,61 @@ public static class Engine {
         }
     }
 }
+public class ScrollTextBox : TextBox {
+    [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll")] static extern bool GetScrollInfo(IntPtr window, int bar, ref ScrollInfo info);
+    [StructLayout(LayoutKind.Sequential)] struct ScrollInfo {
+        public int size; public uint mask; public int minimum, maximum; public uint page; public int position, track;
+    }
+    public event EventHandler ScrollPositionChanged;
+    public int HorizontalPosition { get { return HorizontalInfo().position; } }
+    public int MaximumHorizontalPosition {
+        get { var info = HorizontalInfo(); return Math.Max(0, info.maximum - info.minimum - (int)info.page + 1); }
+    }
+    ScrollInfo HorizontalInfo() {
+        var info = new ScrollInfo { size = Marshal.SizeOf(typeof(ScrollInfo)), mask = 7 };
+        if (IsHandleCreated) GetScrollInfo(Handle, 0, ref info);
+        return info;
+    }
+    public void ScrollHorizontallyTo(int position) {
+        if (!IsHandleCreated) return;
+        int target = Math.Max(0, Math.Min(MaximumHorizontalPosition, position));
+        int characterWidth = Math.Max(1, TextRenderer.MeasureText("0000000000", Font, new Size(Int32.MaxValue, Int32.MaxValue), TextFormatFlags.NoPadding | TextFormatFlags.SingleLine).Width / 10);
+        int characters = (int)Math.Round((double)(target - HorizontalPosition) / characterWidth);
+        if (characters != 0) SendMessage(Handle, 0xB6, new IntPtr(characters), IntPtr.Zero);
+    }
+    public int FirstVisibleLine { get { return IsHandleCreated ? SendMessage(Handle, 0xCE, IntPtr.Zero, IntPtr.Zero).ToInt32() : 0; } }
+    public int MaximumFirstLine {
+        get {
+            if (!IsHandleCreated) return 0;
+            var info = new ScrollInfo { size = Marshal.SizeOf(typeof(ScrollInfo)), mask = 3 };
+            return GetScrollInfo(Handle, 1, ref info) ? Math.Max(0, info.maximum - info.minimum - (int)info.page + 1) : 0;
+        }
+    }
+    public void ScrollToLine(int line) {
+        if (!IsHandleCreated) return;
+        int target = Math.Max(0, Math.Min(MaximumFirstLine, line));
+        SendMessage(Handle, 0xB6, IntPtr.Zero, new IntPtr(target - FirstVisibleLine));
+    }
+    protected override void WndProc(ref Message message) {
+        // Wheel, scrollbar, Page Up/Down, caret movement, selection and native scrolling.
+        bool observe = message.Msg == 0x114 || message.Msg == 0x115 || message.Msg == 0x20A || message.Msg == 0x20E || message.Msg == 0x100 ||
+            message.Msg == 0x102 || message.Msg == 0xB5 || message.Msg == 0xB6 ||
+            message.Msg == 0xB7 || message.Msg == 0x200 || message.Msg == 0x113;
+        int before = observe ? FirstVisibleLine : 0;
+        int horizontalBefore = observe ? HorizontalPosition : 0;
+        base.WndProc(ref message);
+        if (observe && (before != FirstVisibleLine || horizontalBefore != HorizontalPosition) && ScrollPositionChanged != null) ScrollPositionChanged(this, EventArgs.Empty);
+    }
+}
 public class MainWindow : Form {
+    TabControl modes = new TabControl();
+    ScrollTextBox codeInput = new ScrollTextBox(), codeOutput = new ScrollTextBox();
+    CheckBox syncScroll = new CheckBox();
+    bool syncingScroll;
+    Button formatCode = new Button(), copyCode = new Button(), saveCode = new Button();
+    Label codeStatus = new Label();
+    List<string> unsupportedOptions;
     TextBox folder = new TextBox(), presetPath = new TextBox();
     Button chooseFolder = new Button(), choosePreset = new Button(), scan = new Button(), save = new Button(), backup = new Button();
     CheckBox recursive = new CheckBox(); ComboBox charCase = new ComboBox();
@@ -138,7 +194,7 @@ public class MainWindow : Form {
     public MainWindow() : this(SettingsStore.DefaultPath) { }
     public MainWindow(string settingsPath) {
         settingsFile = settingsPath;
-        Text = "SQL Atelier — форматирование папки SQL"; Width = 1200; Height = 850;
+        Text = "SQL Atelier — форматирование SQL"; Width = 1200; Height = 850;
         MinimumSize = new Size(880, 650); StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10); AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = Color.FromArgb(242, 245, 247);
@@ -179,7 +235,7 @@ public class MainWindow : Form {
         backup.Text = "Открыть резервную копию"; backup.Dock = DockStyle.Fill; backup.Enabled = false; footer.Controls.Add(summary, 0, 0); footer.Controls.Add(backup, 1, 0); layout.Controls.Add(footer, 0, 5);
         progress.Dock = DockStyle.Fill; layout.Controls.Add(progress, 0, 6);
         chooseFolder.Click += delegate { using (var dialog = new FolderBrowserDialog { Description = "Папка с отдельными SQL-файлами процедур или пакетов", ShowNewFolderButton = false, SelectedPath = folder.Text }) if (dialog.ShowDialog(this) == DialogResult.OK) folder.Text = dialog.SelectedPath; };
-        choosePreset.Click += delegate { using (var dialog = new OpenFileDialog { Filter = "INI-пресеты (*.ini)|*.ini|Все файлы (*.*)|*.*", FileName = selectedPresetFile }) if (dialog.ShowDialog(this) == DialogResult.OK) try { preset = File.ReadAllText(dialog.FileName, Encoding.UTF8); selectedPresetFile = dialog.FileName; presetPath.Text = dialog.FileName; InvalidatePlan(); } catch (Exception e) { ShowError(e); } };
+        choosePreset.Click += delegate { using (var dialog = new OpenFileDialog { Filter = "INI-пресеты (*.ini)|*.ini|Все файлы (*.*)|*.*", FileName = selectedPresetFile }) if (dialog.ShowDialog(this) == DialogResult.OK) try { preset = File.ReadAllText(dialog.FileName, Encoding.UTF8); selectedPresetFile = dialog.FileName; presetPath.Text = dialog.FileName; InvalidatePlan(); InvalidateCode(); } catch (Exception e) { ShowError(e); } };
         scan.Click += async delegate { await Analyze(); }; save.Click += async delegate { await SavePlan(); };
         folder.TextChanged += delegate { InvalidatePlan(); }; recursive.CheckedChanged += delegate { InvalidatePlan(); }; charCase.SelectedIndexChanged += delegate { InvalidatePlan(); };
         files.SelectedIndexChanged += delegate { if (files.SelectedItems.Count == 0) return; var r = (Row)files.SelectedItems[0].Tag; original.Text = WindowsLines(r.source ?? ""); formatted.Text = WindowsLines(r.preview ?? r.message); };
@@ -192,7 +248,106 @@ public class MainWindow : Form {
             else { settingsTimer.Stop(); PersistSettings(); }
         };
         FormClosed += delegate { settingsTimer.Dispose(); };
+        InitializeCodeMode(layout, row2);
         RestoreSettings();
+    }
+    void InitializeCodeMode(TableLayoutPanel folderLayout, TableLayoutPanel presetRow) {
+        Controls.Remove(folderLayout);
+        folderLayout.RowStyles[1].Height = 0;
+        folderLayout.RowStyles[3].Height = 0;
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.Controls.Add(presetRow, 0, 0);
+        var options = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        options.Controls.Add(charCase);
+        compatibility.AutoSize = true; compatibility.Dock = DockStyle.None; compatibility.Margin = new Padding(12, 6, 0, 0);
+        options.Controls.Add(compatibility); root.Controls.Add(options, 0, 1);
+        modes.Name = "workModes"; modes.Dock = DockStyle.Fill;
+        var codePage = new TabPage("SQL-код");
+        var folderPage = new TabPage("Обработка папки");
+        modes.TabPages.AddRange(new TabPage[] { codePage, folderPage });
+        modes.SelectedIndex = 0;
+        folderPage.Controls.Add(folderLayout);
+        root.Controls.Add(modes, 0, 2); Controls.Add(root);
+        var codeLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(8) };
+        codeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        codeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+        codeLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        codeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
+        formatCode.Name = "formatCode"; formatCode.Text = "Форматировать · Ctrl+Enter"; formatCode.Width = 250; formatCode.Height = 34; formatCode.BackColor = Color.FromArgb(200, 234, 180);
+        copyCode.Name = "copyCode"; copyCode.Text = "Копировать результат"; copyCode.Width = 200; copyCode.Height = 34; copyCode.Enabled = false;
+        saveCode.Name = "saveCode"; saveCode.Text = "Сохранить результат…"; saveCode.Width = 200; saveCode.Height = 34; saveCode.Enabled = false;
+        toolbar.Controls.AddRange(new Control[] { formatCode, copyCode, saveCode }); codeLayout.Controls.Add(toolbar, 0, 0);
+        syncScroll.Name = "syncScroll"; syncScroll.Text = "Синхронная прокрутка"; syncScroll.AutoSize = true;
+        codeLayout.Controls.Add(syncScroll, 0, 1);
+        codeInput.ScrollPositionChanged += delegate { SyncEditors(codeInput, codeOutput); };
+        codeOutput.ScrollPositionChanged += delegate { SyncEditors(codeOutput, codeInput); };
+        syncScroll.CheckedChanged += delegate { if (syncScroll.Checked) SyncEditors(codeInput, codeOutput); };
+        var editors = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        editors.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); editors.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        editors.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); editors.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        editors.Controls.Add(new Label { Text = "Исходный SQL · вставьте код через Ctrl+V", AutoSize = true }, 0, 0);
+        editors.Controls.Add(new Label { Text = "После форматирования", AutoSize = true }, 1, 0);
+        codeInput.Name = "codeInput"; codeOutput.Name = "codeOutput";
+        foreach (var box in new TextBox[] { codeInput, codeOutput }) {
+            box.Dock = DockStyle.Fill; box.Multiline = true; box.WordWrap = false; box.ScrollBars = ScrollBars.Both;
+            box.Font = new Font("Consolas", 11); box.BackColor = Color.White; box.AcceptsTab = true; box.MaxLength = 2000000;
+            box.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.A) { ((TextBox)sender).SelectAll(); e.SuppressKeyPress = true; } };
+        }
+        codeOutput.ReadOnly = true;
+        editors.Controls.Add(codeInput, 0, 1); editors.Controls.Add(codeOutput, 1, 1); codeLayout.Controls.Add(editors, 0, 2);
+        codeStatus.Name = "codeStatus"; codeStatus.Dock = DockStyle.Fill; codeStatus.Padding = new Padding(0, 8, 0, 0);
+        codeStatus.Text = "Вставьте SQL слева и нажмите «Форматировать» или Ctrl+Enter.";
+        codeLayout.Controls.Add(codeStatus, 0, 3); codePage.Controls.Add(codeLayout);
+        codeInput.TextChanged += delegate { InvalidateCode(); };
+        charCase.SelectedIndexChanged += delegate { InvalidateCode(); };
+        formatCode.Click += async delegate { await FormatCode(); };
+        copyCode.Click += delegate { try { Clipboard.SetText(codeOutput.Text); codeStatus.Text = "Результат скопирован."; } catch (Exception e) { codeStatus.Text = "Не удалось скопировать: " + e.Message; } };
+        saveCode.Click += delegate {
+            using (var dialog = new SaveFileDialog { Filter = "SQL-файлы (*.sql)|*.sql|Все файлы (*.*)|*.*", FileName = "script.formatted.sql", DefaultExt = "sql", AddExtension = true }) {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try { File.WriteAllText(dialog.FileName, codeOutput.Text, new UTF8Encoding(false)); codeStatus.Text = "Сохранено: " + dialog.FileName; }
+                catch (Exception e) { codeStatus.Text = "Не удалось сохранить: " + e.Message; }
+            }
+        };
+        Shown += delegate { codeInput.Focus(); };
+    }
+    void SyncEditors(ScrollTextBox source, ScrollTextBox target) {
+        if (!syncScroll.Checked || syncingScroll || busy || source.TextLength == 0 || target.TextLength == 0) return;
+        syncingScroll = true;
+        try {
+            double progress = source.MaximumFirstLine == 0 ? 0 : (double)source.FirstVisibleLine / source.MaximumFirstLine;
+            target.ScrollToLine((int)Math.Round(progress * target.MaximumFirstLine));
+            double horizontal = source.MaximumHorizontalPosition == 0 ? 0 : (double)source.HorizontalPosition / source.MaximumHorizontalPosition;
+            target.ScrollHorizontallyTo((int)Math.Round(horizontal * target.MaximumHorizontalPosition));
+        } finally { syncingScroll = false; }
+    }
+    void InvalidateCode() {
+        codeOutput.Clear(); copyCode.Enabled = saveCode.Enabled = false;
+        codeStatus.Text = "Нажмите «Форматировать» или Ctrl+Enter для получения результата.";
+    }
+    internal async Task FormatCode() {
+        if (busy) return;
+        InvalidateCode();
+        if (String.IsNullOrWhiteSpace(codeInput.Text)) { codeStatus.Text = "Вставьте SQL в левое поле."; codeInput.Focus(); return; }
+        var request = new { operation = "format", text = codeInput.Text, presetText = preset, caseMode = charCase.SelectedIndex == 0 ? (int?)null : charCase.SelectedIndex - 1 };
+        Busy(true); codeStatus.Text = "Форматирование…";
+        try {
+            var result = await Task.Run(() => Engine.Call(request));
+            codeOutput.Text = WindowsLines(result.sql);
+            unsupportedOptions = result.unsupported;
+            codeStatus.Text = "Готово. Исходный SQL сохранён слева. Результат можно скопировать или сохранить.";
+            compatibility.Text = "Не применяются параметры INI: " + result.unsupported.Count + ".";
+        } catch (Exception e) { codeStatus.Text = "Ошибка: " + e.Message; }
+        finally { Busy(false); if (syncScroll.Checked) SyncEditors(codeInput, codeOutput); }
+    }
+    async void FormatCodeCommand() { await FormatCode(); }
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData) {
+        if (keyData == (Keys.Control | Keys.Enter) && modes.SelectedIndex == 0) { FormatCodeCommand(); return true; }
+        return base.ProcessCmdKey(ref msg, keyData);
     }
     void RestoreSettings() {
         try {
@@ -230,7 +385,7 @@ public class MainWindow : Form {
     }
     static string WindowsLines(string text) { return text.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n"); }
     void InvalidatePlan() { if (busy || restoringSettings) return; plan = null; save.Enabled = false; files.Items.Clear(); original.Clear(); formatted.Clear(); QueueSettings(); }
-    void Busy(bool value) { busy = value; chooseFolder.Enabled = choosePreset.Enabled = scan.Enabled = folder.Enabled = recursive.Enabled = charCase.Enabled = !value; save.Enabled = !value && plan != null && plan.rows.Exists(r => r.status == "changed"); progress.Style = value ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks; }
+    void Busy(bool value) { busy = value; chooseFolder.Enabled = choosePreset.Enabled = scan.Enabled = folder.Enabled = recursive.Enabled = charCase.Enabled = !value; modes.Enabled = formatCode.Enabled = codeInput.Enabled = !value; copyCode.Enabled = saveCode.Enabled = !value && codeOutput.TextLength > 0; save.Enabled = !value && plan != null && plan.rows.Exists(r => r.status == "changed"); progress.Style = value ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks; }
     void ShowError(Exception e) { summary.Text = "Ошибка: " + e.Message; MessageBox.Show(this, e.Message, "SQL Atelier", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     void Display() {
         files.BeginUpdate(); files.Items.Clear();
@@ -253,6 +408,7 @@ public class MainWindow : Form {
             summary.Text = String.Format("Файлов: {0}. Изменятся: {1}. Ошибок: {2}. Перед сохранением создаётся резервная копия.", plan.rows.Count, changes, errors);
             save.Text = "Сохранить файлов: " + changes;
             compatibility.Text = "Не применяются параметры INI: " + plan.unsupported.Count + ". Нажмите здесь, чтобы увидеть список.";
+            unsupportedOptions = plan.unsupported;
             compatibility.Cursor = Cursors.Hand;
         } catch (Exception e) { plan = null; ShowError(e); }
         finally { Busy(false); }
@@ -272,7 +428,7 @@ public class MainWindow : Form {
     }
     protected override void OnLoad(EventArgs e) {
         base.OnLoad(e);
-        compatibility.Click += delegate { if (plan != null) MessageBox.Show(this, "Неподдерживаемые параметры:\r\n\r\n" + String.Join("\r\n", plan.unsupported), "Поддержка пресета", MessageBoxButtons.OK, MessageBoxIcon.Information); };
+        compatibility.Click += delegate { if (unsupportedOptions != null) MessageBox.Show(this, "Неподдерживаемые параметры:\r\n\r\n" + String.Join("\r\n", unsupportedOptions), "Поддержка пресета", MessageBoxButtons.OK, MessageBoxIcon.Information); };
     }
 }
 public static class Program {
@@ -291,6 +447,58 @@ public static class Program {
         string settingsPath = Path.Combine(root, "SQLAtelier.settings.json");
         using (var window = new MainWindow(settingsPath)) {
             window.CreateControl(); window.PerformLayout(); if (window.Controls.Count == 0) throw new Exception("Window layout initialization failed");
+            var tabs = (TabControl)window.Controls.Find("workModes", true)[0];
+            var input = (TextBox)window.Controls.Find("codeInput", true)[0];
+            var output = (TextBox)window.Controls.Find("codeOutput", true)[0];
+            var copy = (Button)window.Controls.Find("copyCode", true)[0];
+            if (tabs.TabCount != 2 || tabs.SelectedIndex != 0 || input.ReadOnly || !output.ReadOnly) throw new Exception("Code must be the default editable mode");
+            string pasted = "SELECT a,b,'Русский текст' FROM t WHERE x=1;";
+            input.Text = pasted; Wait(window.FormatCode());
+            if (input.Text != pasted || !output.Text.Contains("'Русский текст'") || !copy.Enabled || !output.Text.Contains("\r\n")) throw new Exception("Text formatting or source preservation failed");
+            input.Text += "\r\n";
+            if (output.TextLength != 0 || copy.Enabled) throw new Exception("Stale output was not cleared");
+            Wait(window.FormatCode());
+            ((ComboBox)window.Controls.Find("caseSelection", true)[0]).SelectedIndex = 3;
+            if (output.TextLength != 0 || copy.Enabled) throw new Exception("Case change did not invalidate output");
+            Wait(window.FormatCode());
+            if (!output.Text.Contains("SELECT")) throw new Exception("Text case override failed");
+            input.Text = "select 'unclosed"; Wait(window.FormatCode());
+            if (output.TextLength != 0 || copy.Enabled || !window.Controls.Find("codeStatus", true)[0].Text.StartsWith("Ошибка:")) throw new Exception("Invalid SQL left a usable result");
+            input.Clear(); Wait(window.FormatCode());
+            if (output.TextLength != 0 || copy.Enabled) throw new Exception("Empty SQL produced a usable result");
+            var linked = (CheckBox)window.Controls.Find("syncScroll", true)[0];
+            if (linked.Checked) throw new Exception("Scroll synchronization should start disabled");
+            var left = (ScrollTextBox)input; var right = (ScrollTextBox)output;
+            left.ClientSize = right.ClientSize = new Size(400, 200);
+            var leftHandle = left.Handle; var rightHandle = right.Handle;
+            var longText = new StringBuilder();
+            for (int line = 0; line < 240; line++) longText.Append("select ").Append(line).Append(";\r\n");
+            left.Text = longText.ToString(); right.Text = longText.ToString() + longText.ToString();
+            if (left.MaximumFirstLine < 20 || right.MaximumFirstLine < 20) throw new Exception("Native test scroll range is missing");
+            left.ScrollToLine(left.MaximumFirstLine / 2);
+            if (right.FirstVisibleLine != 0) throw new Exception("Unchecked editors should scroll independently");
+            linked.Checked = true;
+            CheckScroll(left, right);
+            right.ScrollToLine(right.MaximumFirstLine * 3 / 4);
+            CheckScroll(right, left);
+            linked.Checked = false; int unchangedRight = right.FirstVisibleLine;
+            left.ScrollToLine(0);
+            if (right.FirstVisibleLine != unchangedRight) throw new Exception("Disabling linked scrolling did not take effect");
+            if (left.Text != longText.ToString() || right.Text != longText.ToString() + longText.ToString()) throw new Exception("Scrolling changed editor text");
+            left.Text = new string('x', 500); right.Text = new string('y', 900);
+            if (left.MaximumHorizontalPosition < 100 || right.MaximumHorizontalPosition < 100) throw new Exception("Native horizontal scroll range is missing");
+            left.ScrollHorizontallyTo(left.MaximumHorizontalPosition / 2);
+            if (right.HorizontalPosition != 0) throw new Exception("Unchecked horizontal scrolling must be independent");
+            linked.Checked = true; CheckHorizontalScroll(left, right);
+            right.ScrollHorizontallyTo(right.MaximumHorizontalPosition * 3 / 4); CheckHorizontalScroll(right, left);
+            linked.Checked = false; int unchangedHorizontal = right.HorizontalPosition;
+            left.ScrollHorizontallyTo(0);
+            if (right.HorizontalPosition != unchangedHorizontal) throw new Exception("Unchecked horizontal scrolling remained linked");
+            if (left.Text != new string('x', 500) || right.Text != new string('y', 900)) throw new Exception("Horizontal scrolling changed text");
+            left.Text = "select 1;"; right.Text = "select 2;"; linked.Checked = true;
+            left.ScrollToLine(10); right.ScrollToLine(10);
+            if (left.FirstVisibleLine != 0 || right.FirstVisibleLine != 0) throw new Exception("Short texts must remain at the top");
+            linked.Checked = false;
             ((TextBox)window.Controls.Find("folderPath", true)[0]).Text = root;
             ((CheckBox)window.Controls.Find("includeSubfolders", true)[0]).Checked = false;
             ((ComboBox)window.Controls.Find("caseSelection", true)[0]).SelectedIndex = 3;
@@ -320,6 +528,19 @@ public static class Program {
         if (saved.saved != 1 || File.ReadAllText(Path.Combine(saved.backup, "test.sql")) != source || !File.ReadAllText(file).Contains("select a\r\n")) throw new Exception("Save/backup failed");
         var second = Engine.Call(new { operation = "analyze", folder = root, presetText = Engine.Preset, recursive = true });
         if (second.rows.Count != 1 || second.rows[0].status != "unchanged") throw new Exception("Idempotence failed");
-        File.WriteAllText(report, "PASS: window initialization, automatic settings save, settings roundtrip across restart, cached preset, corrupt settings preservation/recovery, embedded runtime, INI, analyze, save, exact backup, CRLF, backup exclusion, idempotence.\r\nTest folder: " + root, Encoding.UTF8);
+        File.WriteAllText(report, "PASS: optional vertical and horizontal bidirectional proportional scrolling, enable/disable, different text lengths, short text, scroll preserves text; default code tab, pasted SQL formatting, original text preservation, Unicode, CRLF, case override, stale result invalidation, invalid and empty SQL, window initialization, automatic settings save, settings roundtrip across restart, cached preset, corrupt settings preservation/recovery, embedded runtime, INI, analyze, save, exact backup, backup exclusion, idempotence.\r\nTest folder: " + root, Encoding.UTF8);
+    }
+    static void CheckScroll(ScrollTextBox source, ScrollTextBox target) {
+        int expected = (int)Math.Round((double)source.FirstVisibleLine / source.MaximumFirstLine * target.MaximumFirstLine);
+        if (Math.Abs(target.FirstVisibleLine - expected) > 1) throw new Exception("Linked scrolling position mismatch");
+    }
+    static void CheckHorizontalScroll(ScrollTextBox source, ScrollTextBox target) {
+        int expected = (int)Math.Round((double)source.HorizontalPosition / source.MaximumHorizontalPosition * target.MaximumHorizontalPosition);
+        if (Math.Abs(target.HorizontalPosition - expected) > 15) throw new Exception("Linked horizontal scrolling position mismatch");
+    }
+    static void Wait(Task task) {
+        var timeout = Stopwatch.StartNew();
+        while (!task.IsCompleted) { if (timeout.ElapsedMilliseconds > 30000) throw new Exception("Self-test operation timed out"); Application.DoEvents(); System.Threading.Thread.Sleep(10); }
+        task.GetAwaiter().GetResult();
     }
 }
