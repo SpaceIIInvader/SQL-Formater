@@ -174,7 +174,67 @@ public class ScrollTextBox : TextBox {
         if (observe && (before != FirstVisibleLine || horizontalBefore != HorizontalPosition) && ScrollPositionChanged != null) ScrollPositionChanged(this, EventArgs.Empty);
     }
 }
+public class SqlDifference {
+    public int Left, Right;
+    public string Before, After;
+    public int HiddenCount, SourceIndex;
+}
+public static class SqlComparison {
+    public static List<SqlDifference> Fold(List<SqlDifference> rows, bool collapse, HashSet<int> expanded) {
+        if (!collapse) return new List<SqlDifference>(rows);
+        var visible = new List<SqlDifference>();
+        int index = 0;
+        while (index < rows.Count) {
+            if (rows[index].Left == 0 || rows[index].Right == 0) { visible.Add(rows[index++]); continue; }
+            int start = index;
+            while (index < rows.Count && rows[index].Left > 0 && rows[index].Right > 0) index++;
+            int end = index;
+            int firstHidden = start + (start == 0 ? 0 : 3);
+            int afterHidden = end - (end == rows.Count ? 0 : 3);
+            if (afterHidden - firstHidden < 2 || expanded.Contains(firstHidden)) {
+                for (int i = start; i < end; i++) visible.Add(rows[i]);
+            } else {
+                for (int i = start; i < firstHidden; i++) visible.Add(rows[i]);
+                visible.Add(new SqlDifference { SourceIndex = firstHidden, HiddenCount = afterHidden - firstHidden });
+                for (int i = afterHidden; i < end; i++) visible.Add(rows[i]);
+            }
+        }
+        return visible;
+    }
+    static string[] Lines(string text) { return text.Length == 0 ? new string[0] : text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'); }
+    public static List<SqlDifference> Compare(string before, string after) {
+        var a = Lines(before); var b = Lines(after);
+        if (a.Length > 10000 || b.Length > 10000) throw new Exception("Для сравнения допускается до 10 000 строк с каждой стороны. Выберите нужный фрагмент.");
+        int prefix = 0, suffix = 0;
+        while (prefix < a.Length && prefix < b.Length && a[prefix] == b[prefix]) prefix++;
+        while (suffix < a.Length - prefix && suffix < b.Length - prefix && a[a.Length - 1 - suffix] == b[b.Length - 1 - suffix]) suffix++;
+        int n = a.Length - prefix - suffix, m = b.Length - prefix - suffix;
+        if ((long)(n + 1) * (m + 1) > 4000000) throw new Exception("Слишком большой изменённый фрагмент. Сравните отдельные запросы или процедуры.");
+        var lengths = new int[n + 1, m + 1];
+        for (int x = n - 1; x >= 0; x--) for (int y = m - 1; y >= 0; y--)
+            lengths[x, y] = a[prefix + x] == b[prefix + y] ? 1 + lengths[x + 1, y + 1] : Math.Max(lengths[x + 1, y], lengths[x, y + 1]);
+        var rows = new List<SqlDifference>();
+        for (int k = 0; k < prefix; k++) rows.Add(new SqlDifference { Left = k + 1, Right = k + 1, Before = a[k], After = b[k] });
+        int i = 0, j = 0;
+        while (i < n || j < m) {
+            if (i < n && j < m && a[prefix + i] == b[prefix + j]) {
+                rows.Add(new SqlDifference { Left = prefix + i + 1, Right = prefix + j + 1, Before = a[prefix + i], After = b[prefix + j] }); i++; j++;
+            } else if (i < n && (j == m || lengths[i + 1, j] >= lengths[i, j + 1])) {
+                rows.Add(new SqlDifference { Left = prefix + i + 1, Before = a[prefix + i] }); i++;
+            } else { rows.Add(new SqlDifference { Right = prefix + j + 1, After = b[prefix + j] }); j++; }
+        }
+        for (int k = suffix; k > 0; k--) rows.Add(new SqlDifference { Left = a.Length - k + 1, Right = b.Length - k + 1, Before = a[a.Length - k], After = b[b.Length - k] });
+        return rows;
+    }
+}
 public class MainWindow : Form {
+    TextBox compareLeft = new TextBox(), compareRight = new TextBox();
+    DataGridView differenceGrid = new DataGridView();
+    Label compareStatus = new Label();
+    List<SqlDifference> differenceRows = new List<SqlDifference>();
+    List<SqlDifference> visibleDifferenceRows = new List<SqlDifference>();
+    HashSet<int> expandedDifferenceBlocks = new HashSet<int>();
+    CheckBox collapseEqual = new CheckBox();
     TabControl modes = new TabControl();
     ScrollTextBox codeInput = new ScrollTextBox(), codeOutput = new ScrollTextBox();
     CheckBox syncScroll = new CheckBox();
@@ -249,6 +309,7 @@ public class MainWindow : Form {
         };
         FormClosed += delegate { settingsTimer.Dispose(); };
         InitializeCodeMode(layout, row2);
+        InitializeComparisonMode();
         RestoreSettings();
     }
     void InitializeCodeMode(TableLayoutPanel folderLayout, TableLayoutPanel presetRow) {
@@ -315,6 +376,125 @@ public class MainWindow : Form {
         };
         Shown += delegate { codeInput.Focus(); };
     }
+    void InitializeComparisonMode() {
+        var page = new TabPage("Сравнение SQL"); modes.TabPages.Add(page);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1, Padding = new Padding(8) };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); page.Controls.Add(layout);
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true };
+        var compare = new Button { Text = "Сравнить · Ctrl+Enter", AutoSize = true, Height = 34 };
+        var format = new Button { Text = "Выровнять и сравнить", AutoSize = true, Height = 34, BackColor = Color.FromArgb(200, 234, 180) };
+        var previous = new Button { Text = "↑ Различие", AutoSize = true, Height = 34 };
+        var next = new Button { Text = "↓ Различие", AutoSize = true, Height = 34 };
+        toolbar.Controls.AddRange(new Control[] { compare, format, previous, next }); layout.Controls.Add(toolbar, 0, 0);
+        collapseEqual.Name = "collapseEqual"; collapseEqual.Text = "Скрывать совпадающие строки"; collapseEqual.Checked = true; collapseEqual.AutoSize = true;
+        var collapseAll = new Button { Name = "collapseAll", Text = "Свернуть все совпадения", AutoSize = true, Height = 34 };
+        toolbar.Controls.Add(collapseEqual); toolbar.Controls.Add(collapseAll);
+        collapseEqual.CheckedChanged += delegate { RefreshDifferenceRows(); };
+        collapseAll.Click += delegate { expandedDifferenceBlocks.Clear(); collapseEqual.Checked = true; RefreshDifferenceRows(); };
+        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, Size = new Size(1000, 500), SplitterDistance = 220, Panel1MinSize = 80, Panel2MinSize = 80 };
+        var editors = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        editors.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); editors.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        editors.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); editors.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        editors.Controls.Add(new Label { Text = "Версия 1 · вставьте SQL", AutoSize = true }, 0, 0);
+        editors.Controls.Add(new Label { Text = "Версия 2 · вставьте SQL", AutoSize = true }, 1, 0);
+        compareLeft.Name = "compareLeft"; compareRight.Name = "compareRight";
+        foreach (var box in new TextBox[] { compareLeft, compareRight }) {
+            box.Dock = DockStyle.Fill; box.Multiline = true; box.AcceptsTab = true; box.WordWrap = false;
+            box.ScrollBars = ScrollBars.Both; box.Font = new Font("Consolas", 11); box.MaxLength = 2000000;
+            box.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.A) { ((TextBox)sender).SelectAll(); e.SuppressKeyPress = true; } };
+            box.TextChanged += delegate { ClearDifferences(); compareStatus.Text = "Текст изменён. Нажмите «Сравнить» или «Выровнять и сравнить»."; };
+        }
+        editors.Controls.Add(compareLeft, 0, 1); editors.Controls.Add(compareRight, 1, 1); split.Panel1.Controls.Add(editors);
+        differenceGrid.Name = "differenceGrid"; differenceGrid.Dock = DockStyle.Fill; differenceGrid.ReadOnly = true;
+        differenceGrid.AllowUserToAddRows = differenceGrid.AllowUserToDeleteRows = differenceGrid.AllowUserToOrderColumns = false;
+        differenceGrid.RowHeadersVisible = false; differenceGrid.VirtualMode = true; differenceGrid.AutoGenerateColumns = false;
+        differenceGrid.Font = new Font("Consolas", 10); differenceGrid.BackgroundColor = Color.White;
+        differenceGrid.SelectionMode = DataGridViewSelectionMode.CellSelect;
+        differenceGrid.ClipboardCopyMode = DataGridViewClipboardCopyMode.EnableWithoutHeaderText;
+        foreach (string title in new string[] { "Стр. 1", "Версия 1 · удалено красным", "Стр. 2", "Версия 2 · добавлено зелёным" }) {
+            var column = new DataGridViewTextBoxColumn { HeaderText = title, SortMode = DataGridViewColumnSortMode.NotSortable };
+            if (differenceGrid.Columns.Count % 2 == 0) column.Width = 65;
+            else { column.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; column.MinimumWidth = 250; }
+            differenceGrid.Columns.Add(column);
+        }
+        differenceGrid.CellValueNeeded += delegate(object sender, DataGridViewCellValueEventArgs e) {
+            var row = visibleDifferenceRows[e.RowIndex];
+            if (row.HiddenCount > 0) { e.Value = e.ColumnIndex % 2 == 0 ? "…" : "▶ Совпадает строк: " + row.HiddenCount + " · нажмите, чтобы раскрыть"; return; }
+            e.Value = e.ColumnIndex == 0 ? (object)(row.Left == 0 ? "" : row.Left.ToString()) : e.ColumnIndex == 1 ? row.Before : e.ColumnIndex == 2 ? (object)(row.Right == 0 ? "" : row.Right.ToString()) : row.After;
+        };
+        differenceGrid.CellFormatting += delegate(object sender, DataGridViewCellFormattingEventArgs e) {
+            var row = visibleDifferenceRows[e.RowIndex];
+            e.CellStyle.BackColor = row.HiddenCount > 0 ? Color.FromArgb(225, 237, 250) : row.Right == 0 && e.ColumnIndex < 2 ? Color.MistyRose : row.Left == 0 && e.ColumnIndex >= 2 ? Color.FromArgb(218, 245, 218) : Color.White;
+        };
+        differenceGrid.CellClick += delegate(object sender, DataGridViewCellEventArgs e) {
+            if (e.RowIndex >= 0) ExpandDifferenceBlock(e.RowIndex);
+        };
+        differenceGrid.KeyDown += delegate(object sender, KeyEventArgs e) {
+            if ((e.KeyCode == Keys.Enter || e.KeyCode == Keys.Space) && differenceGrid.CurrentCell != null && visibleDifferenceRows[differenceGrid.CurrentCell.RowIndex].HiddenCount > 0) {
+                ExpandDifferenceBlock(differenceGrid.CurrentCell.RowIndex); e.Handled = true; e.SuppressKeyPress = true;
+            }
+        };
+        split.Panel2.Controls.Add(differenceGrid); layout.Controls.Add(split, 0, 1);
+        compareStatus.Name = "compareStatus"; compareStatus.Dock = DockStyle.Fill;
+        compareStatus.Text = "Вставьте две версии SQL. Выравнивание заменяет тексты в полях; результат можно выделить и скопировать.";
+        layout.Controls.Add(compareStatus, 0, 2);
+        compare.Click += async delegate { await CompareSql(false); };
+        format.Click += async delegate { await CompareSql(true); };
+        previous.Click += delegate { MoveDifference(-1); }; next.Click += delegate { MoveDifference(1); };
+    }
+    internal async Task CompareSql(bool format) {
+        if (busy) return;
+        string left = compareLeft.Text, right = compareRight.Text, selectedPreset = preset;
+        int? selectedCase = charCase.SelectedIndex == 0 ? (int?)null : charCase.SelectedIndex - 1;
+        ClearDifferences();
+        Busy(true); compareStatus.Text = format ? "Выравнивание и сравнение…" : "Сравнение…";
+        try {
+            var rows = await Task.Run(() => {
+                if (format) {
+                    if (!String.IsNullOrWhiteSpace(left)) left = WindowsLines(Engine.Call(new { operation = "format", text = left, presetText = selectedPreset, caseMode = selectedCase }).sql);
+                    if (!String.IsNullOrWhiteSpace(right)) right = WindowsLines(Engine.Call(new { operation = "format", text = right, presetText = selectedPreset, caseMode = selectedCase }).sql);
+                }
+                return SqlComparison.Compare(left, right);
+            });
+            if (format) { compareLeft.Text = left; compareRight.Text = right; }
+            differenceRows = rows; RefreshDifferenceRows();
+            int removed = rows.FindAll(r => r.Right == 0).Count, added = rows.FindAll(r => r.Left == 0).Count;
+            compareStatus.Text = removed == 0 && added == 0 ? "Тексты совпадают (переносы CRLF/LF считаются одинаковыми)." : String.Format("Удалено строк: {0} · добавлено: {1}. Красный — версия 1, зелёный — версия 2. Ctrl+C копирует выбранные ячейки.", removed, added);
+        } catch (Exception e) { compareStatus.Text = "Ошибка: " + e.Message; }
+        finally { Busy(false); }
+    }
+    void ClearDifferences() {
+        differenceGrid.RowCount = 0; differenceRows.Clear(); visibleDifferenceRows.Clear(); expandedDifferenceBlocks.Clear();
+    }
+    void RefreshDifferenceRows() {
+        int top = differenceGrid.FirstDisplayedScrollingRowIndex;
+        differenceGrid.RowCount = 0;
+        visibleDifferenceRows = SqlComparison.Fold(differenceRows, collapseEqual.Checked, expandedDifferenceBlocks);
+        differenceGrid.RowCount = visibleDifferenceRows.Count;
+        if (top >= 0 && visibleDifferenceRows.Count > 0) differenceGrid.FirstDisplayedScrollingRowIndex = Math.Min(top, visibleDifferenceRows.Count - 1);
+        differenceGrid.Invalidate();
+    }
+    internal void ExpandDifferenceBlock(int index) {
+        var row = visibleDifferenceRows[index];
+        if (row.HiddenCount == 0) return;
+        expandedDifferenceBlocks.Add(row.SourceIndex); RefreshDifferenceRows();
+        differenceGrid.CurrentCell = differenceGrid.Rows[index].Cells[1];
+    }
+    void MoveDifference(int direction) {
+        int count = visibleDifferenceRows.Count;
+        if (count == 0) return;
+        int start = differenceGrid.CurrentCell == null ? (direction > 0 ? -1 : 0) : differenceGrid.CurrentCell.RowIndex;
+        for (int step = 1; step <= count; step++) {
+            int index = (start + direction * step + count * 2) % count;
+            var row = visibleDifferenceRows[index];
+            if (row.HiddenCount > 0) continue;
+            if (row.Left != 0 && row.Right != 0) continue;
+            differenceGrid.CurrentCell = differenceGrid.Rows[index].Cells[row.Left == 0 ? 3 : 1];
+            differenceGrid.FirstDisplayedScrollingRowIndex = index; return;
+        }
+    }
     void SyncEditors(ScrollTextBox source, ScrollTextBox target) {
         if (!syncScroll.Checked || syncingScroll || busy || source.TextLength == 0 || target.TextLength == 0) return;
         syncingScroll = true;
@@ -346,9 +526,11 @@ public class MainWindow : Form {
     }
     async void FormatCodeCommand() { await FormatCode(); }
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData) {
+        if (keyData == (Keys.Control | Keys.Enter) && modes.SelectedIndex == 2) { CompareSqlCommand(); return true; }
         if (keyData == (Keys.Control | Keys.Enter) && modes.SelectedIndex == 0) { FormatCodeCommand(); return true; }
         return base.ProcessCmdKey(ref msg, keyData);
     }
+    async void CompareSqlCommand() { await CompareSql(false); }
     void RestoreSettings() {
         try {
             string notice; var preferences = SettingsStore.Load(settingsFile, out notice);
@@ -447,11 +629,12 @@ public static class Program {
         string settingsPath = Path.Combine(root, "SQLAtelier.settings.json");
         using (var window = new MainWindow(settingsPath)) {
             window.CreateControl(); window.PerformLayout(); if (window.Controls.Count == 0) throw new Exception("Window layout initialization failed");
+            CheckComparison(window);
             var tabs = (TabControl)window.Controls.Find("workModes", true)[0];
             var input = (TextBox)window.Controls.Find("codeInput", true)[0];
             var output = (TextBox)window.Controls.Find("codeOutput", true)[0];
             var copy = (Button)window.Controls.Find("copyCode", true)[0];
-            if (tabs.TabCount != 2 || tabs.SelectedIndex != 0 || input.ReadOnly || !output.ReadOnly) throw new Exception("Code must be the default editable mode");
+            if (tabs.TabCount != 3 || tabs.SelectedIndex != 0 || input.ReadOnly || !output.ReadOnly) throw new Exception("Code must be the default editable mode");
             string pasted = "SELECT a,b,'Русский текст' FROM t WHERE x=1;";
             input.Text = pasted; Wait(window.FormatCode());
             if (input.Text != pasted || !output.Text.Contains("'Русский текст'") || !copy.Enabled || !output.Text.Contains("\r\n")) throw new Exception("Text formatting or source preservation failed");
@@ -529,6 +712,63 @@ public static class Program {
         var second = Engine.Call(new { operation = "analyze", folder = root, presetText = Engine.Preset, recursive = true });
         if (second.rows.Count != 1 || second.rows[0].status != "unchanged") throw new Exception("Idempotence failed");
         File.WriteAllText(report, "PASS: optional vertical and horizontal bidirectional proportional scrolling, enable/disable, different text lengths, short text, scroll preserves text; default code tab, pasted SQL formatting, original text preservation, Unicode, CRLF, case override, stale result invalidation, invalid and empty SQL, window initialization, automatic settings save, settings roundtrip across restart, cached preset, corrupt settings preservation/recovery, embedded runtime, INI, analyze, save, exact backup, backup exclusion, idempotence.\r\nTest folder: " + root, Encoding.UTF8);
+    }
+    static void CheckComparison(MainWindow window) {
+        var equalLines = new List<string>();
+        for (int i = 0; i < 30; i++) equalLines.Add("select " + i + ";");
+        string originalSql = String.Join("\n", equalLines);
+        equalLines[15] = "select 999;";
+        var fullDiff = SqlComparison.Compare(originalSql, String.Join("\n", equalLines));
+        var expanded = new HashSet<int>();
+        var folded = SqlComparison.Fold(fullDiff, true, expanded);
+        if (folded.Count != 10 || folded[0].HiddenCount != 12 || folded[9].HiddenCount != 11) throw new Exception("Equal context was not folded around changes");
+        if (folded.FindAll(r => r.HiddenCount == 0 && (r.Left == 0 || r.Right == 0)).Count != 2) throw new Exception("Folding hid changes");
+        expanded.Add(folded[0].SourceIndex);
+        if (SqlComparison.Fold(fullDiff, true, expanded).Count != 21 || SqlComparison.Fold(fullDiff, false, expanded).Count != fullDiff.Count) throw new Exception("Unfolding lost rows");
+        var allEqual = SqlComparison.Fold(SqlComparison.Compare(originalSql, originalSql), true, new HashSet<int>());
+        if (allEqual.Count != 1 || allEqual[0].HiddenCount != 30) throw new Exception("Identical SQL folding failed");
+        var rows = SqlComparison.Compare("a\nb\nc", "a\nx\nb\nc");
+        if (rows.Count != 4 || rows[1].Left != 0 || rows[1].After != "x" || rows[2].Left != 2 || rows[2].Right != 3) throw new Exception("Inserted line shifted comparison alignment");
+        if (SqlComparison.Compare("", "").Count != 0 || SqlComparison.Compare("a\r\nb", "a\nb").Exists(r => r.Left == 0 || r.Right == 0)) throw new Exception("Empty text or newline normalization failed");
+        var random = new Random(27);
+        for (int sample = 0; sample < 100; sample++) {
+            var a = new List<string>(); var b = new List<string>();
+            for (int i = 0; i < 20; i++) { a.Add(random.Next(4).ToString()); b.Add(random.Next(4).ToString()); }
+            rows = SqlComparison.Compare(String.Join("\n", a), String.Join("\n", b));
+            var recoveredA = new List<string>(); var recoveredB = new List<string>();
+            foreach (var row in rows) {
+                if (row.Left > 0) { if (row.Left != recoveredA.Count + 1) throw new Exception("Invalid left line number"); recoveredA.Add(row.Before); }
+                if (row.Right > 0) { if (row.Right != recoveredB.Count + 1) throw new Exception("Invalid right line number"); recoveredB.Add(row.After); }
+                if (row.Left > 0 && row.Right > 0 && row.Before != row.After) throw new Exception("Changed lines marked equal");
+            }
+            if (String.Join("\n", recoveredA) != String.Join("\n", a) || String.Join("\n", recoveredB) != String.Join("\n", b)) throw new Exception("Comparison lost text");
+        }
+        bool limited = false;
+        try { SqlComparison.Compare(new string('\n', 10001), ""); } catch { limited = true; }
+        if (!limited) throw new Exception("Comparison line limit missing");
+        var left = (TextBox)window.Controls.Find("compareLeft", true)[0];
+        var right = (TextBox)window.Controls.Find("compareRight", true)[0];
+        var grid = (DataGridView)window.Controls.Find("differenceGrid", true)[0];
+        left.Text = originalSql; right.Text = String.Join("\n", equalLines);
+        Wait(window.CompareSql(false));
+        if (grid.RowCount != 10) throw new Exception("Collapsed view not enabled by default");
+        window.ExpandDifferenceBlock(0);
+        if (grid.RowCount != 21 || left.Text != originalSql) throw new Exception("Expanding a block modified SQL");
+        var collapse = (CheckBox)window.Controls.Find("collapseEqual", true)[0];
+        collapse.Checked = false;
+        if (grid.RowCount != fullDiff.Count) throw new Exception("Full comparison toggle failed");
+        collapse.Checked = true;
+        left.Text = "select a from t;"; right.Text = "select b from t;";
+        Wait(window.CompareSql(false));
+        if (grid.RowCount != 2 || left.ReadOnly || right.ReadOnly || left.Text != "select a from t;") throw new Exception("Editable comparison UI failed");
+        right.Text = "SELECT a FROM t;";
+        if (grid.RowCount != 0) throw new Exception("Stale comparison remained visible");
+        Wait(window.CompareSql(true));
+        if (left.Text != right.Text || grid.RowCount == 0 || !window.Controls.Find("compareStatus", true)[0].Text.StartsWith("Тексты совпадают")) throw new Exception("Format and compare failed");
+        left.Text = "select 'broken"; string unchanged = right.Text;
+        Wait(window.CompareSql(true));
+        if (left.Text != "select 'broken" || right.Text != unchanged || grid.RowCount != 0 || !window.Controls.Find("compareStatus", true)[0].Text.StartsWith("Ошибка:")) throw new Exception("Comparison error did not preserve inputs");
+        left.Clear(); right.Clear();
     }
     static void CheckScroll(ScrollTextBox source, ScrollTextBox target) {
         int expected = (int)Math.Round((double)source.FirstVisibleLine / source.MaximumFirstLine * target.MaximumFirstLine);
