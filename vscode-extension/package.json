@@ -1,0 +1,52 @@
+{
+  "name": "sql-atelier",
+  "displayName": "SQL Atelier — Firebird SQL",
+  "description": "Локальное форматирование Firebird SQL / PSQL по INI-пресетам с предпросмотром различий.",
+  "version": "0.1.0",
+  "publisher": "sql-atelier-local",
+  "license": "UNLICENSED",
+  "private": true,
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Formatters"],
+  "keywords": ["SQL", "Firebird", "PSQL", "formatter", "IBExpert"],
+  "main": "./extension.cjs",
+  "extensionKind": ["workspace"],
+  "activationEvents": ["onLanguage:sql"],
+  "capabilities": { "untrustedWorkspaces": { "supported": true }, "virtualWorkspaces": { "supported": true } },
+  "contributes": {
+    "commands": [
+      { "command": "sqlAtelier.menu", "title": "Действия", "category": "SQL Atelier" },
+      { "command": "sqlAtelier.format", "title": "Форматировать SQL", "category": "SQL Atelier", "enablement": "editorLangId == sql && !editorReadonly" },
+      { "command": "sqlAtelier.preview", "title": "Предпросмотр форматирования", "category": "SQL Atelier", "enablement": "editorLangId == sql" },
+      { "command": "sqlAtelier.selectPreset", "title": "Выбрать INI-пресет…", "category": "SQL Atelier" },
+      { "command": "sqlAtelier.openPreset", "title": "Открыть / создать копию пресета…", "category": "SQL Atelier" },
+      { "command": "sqlAtelier.resetPreset", "title": "Использовать встроенный пресет", "category": "SQL Atelier" },
+      { "command": "sqlAtelier.settings", "title": "Настройки", "category": "SQL Atelier" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "sqlAtelier.format", "when": "editorLangId == sql && !editorReadonly", "group": "1_modification@90" },
+        { "command": "sqlAtelier.preview", "when": "editorLangId == sql", "group": "1_modification@91" }
+      ]
+    },
+    "configuration": {
+      "title": "SQL Atelier",
+      "properties": {
+        "sqlAtelier.presetPath": {
+          "type": "string", "default": "", "scope": "resource",
+          "description": "Путь к INI-пресету: абсолютный или относительно папки открытого SQL-файла в рабочей области. Пустое значение — встроенный пресет."
+        },
+        "sqlAtelier.caseMode": {
+          "type": "string", "enum": ["preset", "preserve", "lower", "upper", "title"], "default": "preset", "scope": "resource",
+          "enumDescriptions": ["Регистр из INI", "Сохранить регистр", "Нижний регистр", "Верхний регистр", "С заглавной буквы"],
+          "description": "Переопределение регистра некавыченных SQL-слов. Строки и идентификаторы в кавычках сохраняются."
+        },
+        "sqlAtelier.emptyLinesNumber": {
+          "type": ["integer", "null"], "default": null, "minimum": 0, "maximum": 10, "scope": "resource",
+          "description": "Пустые строки между операторами тела процедуры: null — из INI, 0 — не добавлять, 1 — одна строка. Серии объявлений и присваиваний остаются группами."
+        }
+      }
+    }
+  },
+  "scripts": { "test": "node tests/run.cjs", "package": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1" }
+}

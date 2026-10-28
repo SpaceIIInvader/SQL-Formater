@@ -1,0 +1,8 @@
+node_modules/
+.test-profile/
+.test-extensions/
+.test-workspace/
+.test-integration-result.json
+tests/.tmp-*/
+dist/.stage-*/
+*.log
