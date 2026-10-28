@@ -1,12 +1,12 @@
 # Local settings and SQL backups
-desktop/SQLAtelier.settings.json
-desktop/SQLAtelier.settings.json.*
+windows-app/SQLAtelier.settings.json
+windows-app/SQLAtelier.settings.json.*
 **/.sql-atelier-backup/
 
 # Generated build files (the ready-to-run desktop EXE is tracked)
-desktop/build/node.gz
-desktop/build/BuildInfo.cs
-desktop/build/SQLAtelier.build.exe
+windows-app/build/node.gz
+windows-app/build/BuildInfo.cs
+windows-app/build/SQLAtelier.build.exe
 node_modules/
 *.tmp
 Thumbs.db

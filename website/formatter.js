@@ -74,18 +74,18 @@
   const supported = {
     General: 'BlockIndent IdentCharCase KeywordCharCase KeepEmptyLines EmptyLinesNumber SpaceAfterComma RightMargin NoSpaceAfterCommaInDatatypes NoSpaceBetweenProcNameAndBracket StartSingleLineCommentsFromFirstColumn SpaceAfterOpeningBracket SpaceBeforeClosingBracket',
     Select: 'CRLFBeforeColumnsList CRLFBeforeCommaInColumnList CRLFBeforeCommaInVarsList IndentBeforeColumn OneColumnInLine OneVariableInLine OneOrderByItemInLine CRLFBeforeCommaInOrderByList',
-    InputOutput: 'Indent CRLFBeforeRETURNS',
-    DeclareSection: 'IndentBeforeDECLARE',
-    Insert: 'CRLFBeforeListOfInsertedColumns OneInsertedColumnInLine OneIntoVariableInLine OneValuesExpressionInLine OneMatchingColumnInLine OneReturningColumnInLine ColumnValueIndent',
-    Update: 'CRLFAfterUPDATE IndentBeforeTableName CRLFBeforeCommaInColumnList IndentBeforeFieldValue OneColumnValueExpressionInLine OneIntoVariableInLine OneReturningColumnInLine',
-    Delete: 'OneIntoVariableInLine OneReturningColumnInLine IndentBeforeTableName',
+    InputOutput: 'Indent CRLFBeforeRETURNS AlignTypeDefinitions',
+    DeclareSection: 'IndentBeforeDECLARE CRLFBeforeSELECT IndentBeforeSELECT AlignTypeDefinitions',
+    Insert: 'CRLFBeforeListOfInsertedColumns OneInsertedColumnInLine OneIntoVariableInLine OneValuesExpressionInLine OneMatchingColumnInLine OneReturningColumnInLine ColumnValueIndent IndentBeforeMATCHINGColumns IndentBeforeRETURNINGColumns',
+    Update: 'CRLFAfterUPDATE IndentBeforeTableName CRLFBeforeCommaInColumnList IndentBeforeFieldValue OneColumnValueExpressionInLine OneIntoVariableInLine OneReturningColumnInLine IndentBeforeRETURNINGColumns',
+    Delete: 'OneIntoVariableInLine OneReturningColumnInLine IndentBeforeTableName IndentBeforeRETURNINGColumns',
     For: 'CRLFBeforeSELECT CRLFBeforeEXECUTE CRLFBeforeWITH CRLFBeforeDO CRLFBeforeBEGIN SelectExecuteIndent',
-    IfThenElse: 'CRLFAfterTHEN NoCRLFBetweenTHEN_BEGIN CRLFAfterELSE NoCRLFBetweenELSE_IF NoCRLFBetweenELSE_BEGIN IndentBeforeELSE',
+    IfThenElse: 'CRLFAfterTHEN NoCRLFBetweenTHEN_BEGIN CRLFAfterELSE NoCRLFBetweenELSE_IF NoCRLFBetweenELSE_BEGIN IndentBeforeELSE CRLFBeforeAND CRLFAfterAND CRLFBeforeOR CRLFAfterOR',
     While: 'CRLFBeforeDO CRLFBeforeBEGIN', When: 'CRLFBeforeDO CRLFBeforeBEGIN',
     Where: 'CRLFBeforeAND CRLFAfterAND CRLFBeforeOR CRLFAfterOR IndentBeforeOR IndentBeforeAND',
     JoinOn: 'CRLFBeforeAND CRLFAfterAND CRLFBeforeOR CRLFAfterOR CRLFBeforeON CRLFAfterON IndentBeforeOR IndentBeforeAND IndentBeforeON',
     MergeOn: 'CRLFBeforeAND CRLFAfterAND CRLFBeforeOR CRLFAfterOR IndentBeforeOR IndentBeforeAND',
-    Case: 'CRLFBeforeWHEN CRLFBeforeELSE CRLFBeforeTHEN CRLFBeforeEND CRLFAfterTHEN IndentBeforeWHEN IndentBeforeTHEN IndentBeforeELSE',
+    Case: 'CRLFBeforeWHEN CRLFBeforeELSE CRLFBeforeTHEN CRLFBeforeEND CRLFAfterTHEN IndentBeforeWHEN IndentBeforeTHEN IndentBeforeELSE IndentBeforeTHENExpression',
     Merge: 'CRLFBeforeUSING CRLFBeforeON CRLFBeforeWHEN CRLFBeforeINSERT_UPDATE IndentBeforeINSERT_UPDATE'
   };
   const clauses = ['FROM', 'WHERE', 'INTO', 'JOIN', 'UNION', 'ORDER_BY', 'GROUP_BY', 'HAVING', 'PLAN', 'ROWS', 'OFFSET', 'FETCH', 'VALUES', 'MATCHING', 'RETURNING', 'SET', 'SELECT'];
@@ -95,20 +95,56 @@
   function unsupported(settings) {
     const ignored = [];
     for (const [s, entries] of Object.entries(settings)) for (const k of Object.keys(entries))
-      if (!(supported[s] || '').split(' ').includes(k)) ignored.push(`[${s}] ${k}`);
+      if (!(supported[s] || '').toLowerCase().split(' ').includes(k.toLowerCase())) ignored.push(`[${s}] ${k}`);
     return ignored;
   }
 
   function format(sql, settings, options = {}) {
     if (sql.length > 2000000) throw new Error('Максимальный размер скрипта — 2 млн символов. Разделите файл на части.');
     const tokens = lex(sql), lines = []; let line = '', depth = 0, indent = 0, statement = '', clause = '', clauseIndent = 0, statementBase = 0;
-    let prev = null, pendingIndent = null, routine = false, signature = false, forLoop = false, condition = false;
+    let prev = null, pendingIndent = null, routine = false, signature = false, forLoop = false, condition = false, declaration = false, declarationIndent = 0;
     const frames = [], blocks = [], queryStack = [];
-    const val = (s, k, fallback = 0) => settings[s]?.[k] ?? fallback;
+    const normalized = Object.fromEntries(Object.entries(settings).map(([s, entries]) => [s, Object.fromEntries(Object.entries(entries).map(([k, v]) => [k.toLowerCase(), v]))]));
+    const val = (s, k, fallback = 0) => normalized[s]?.[k.toLowerCase()] ?? fallback;
     const step = Math.min(val('General', 'BlockIndent', 2), 16);
     const margin = Math.max(40, Math.min(val('General', 'RightMargin', 120), 500));
     const blanks = Math.min(val('General', 'EmptyLinesNumber', 0), 10);
-    let lineIndent = 0;
+    // A bare, indented procedure can be pasted from a package body.
+    if (['PROCEDURE', 'FUNCTION'].includes(tokens[0]?.upper)) {
+      const prefix = sql.slice(0, tokens[0].start);
+      indent = /^[\t ]*$/.test(prefix) ? prefix.replace(/\t/g, ' '.repeat(step)).length : 0;
+    }
+    let lineIndent = indent;
+    const typePadding = new Map();
+    function alignTypes(entries) {
+      if (!entries.length) return;
+      entries = entries.filter(([name, type]) => tokens[name] && tokens[type]);
+      const width = entries.reduce((maximum, [name]) => Math.max(maximum, tokens[name].value.length), 0);
+      for (const [name, type] of entries) typePadding.set(type, width - tokens[name].value.length);
+    }
+    if (val('InputOutput', 'AlignTypeDefinitions')) {
+      let header = false, level = 0, entries = [], first = true, name = -1;
+      for (let k = 0; k < tokens.length; k++) {
+        const token = tokens[k];
+        if (token.kind === 'comment') continue;
+        if (['PROCEDURE', 'FUNCTION'].includes(token.upper) && tokens[k - 1]?.upper !== 'EXECUTE') header = true;
+        if (!header) continue;
+        if (['AS', ';', 'BEGIN'].includes(token.upper) && level === 0) { header = false; continue; }
+        if (token.value === '(') { level++; if (level === 1) { entries = []; first = true; name = -1; } continue; }
+        if (token.value === ')') { if (level === 1) alignTypes(entries); level--; continue; }
+        if (level !== 1) continue;
+        if (token.value === ',') { first = true; name = -1; continue; }
+        if (first) { name = k; first = false; }
+        else if (name >= 0) { entries.push([name, k]); name = -1; }
+      }
+    }
+    if (val('DeclareSection', 'AlignTypeDefinitions')) {
+      let entries = [];
+      for (let k = 0; k < tokens.length; k++) {
+        if (tokens[k].upper === 'DECLARE' && tokens[k + 1]?.upper === 'VARIABLE') entries.push([k + 2, k + 3]);
+        if (['BEGIN', 'PROCEDURE', 'FUNCTION'].includes(tokens[k].upper) || k === tokens.length - 1) { alignTypes(entries); entries = []; }
+      }
+    }
     function flush(nextIndent = indent) {
       if (line.trim()) lines.push(' '.repeat(Math.max(0, lineIndent)) + line.trimEnd());
       line = ''; lineIndent = Math.max(0, nextIndent);
@@ -133,7 +169,8 @@
       if (t.kind === 'comment') {
         if (v.startsWith('--')) {
           if (val('General', 'StartSingleLineCommentsFromFirstColumn')) { flush(0); lineIndent = 0; }
-          write(v); flush(clauseIndent || indent);
+          const parameterIndent = frames.at(-1)?.params ? indent + val('InputOutput', 'Indent', 4) : clauseIndent || indent;
+          write(v); flush(parameterIndent);
         } else { write(v); if (/[\r\n]/.test(v)) flush(); }
         prev = t; continue;
       }
@@ -169,9 +206,9 @@
         const listKind = p === 'VALUES' ? 'values' : p === 'MATCHING' ? 'matching' : statement === 'Insert' && clause === 'INTO' && frames.length === 0 ? 'insert' : '';
         const frame = { clause, statement, clauseIndent, statementBase, indent, query, params, depth, listKind, type: /^(NUMERIC|DECIMAL|VARCHAR|CHAR|FLOAT|DOUBLE)$/.test(p || '') };
         frames.push(frame); depth++;
-        const functionCall = prev?.kind === 'word' && !['IF', 'WHILE', 'EXISTS', 'IN', 'VALUES', 'RETURNS', 'AS', 'ON', 'AND', 'OR', 'NOT'].includes(p);
+        const functionCall = prev?.kind === 'word' && !['IF', 'WHILE', 'FOR', 'SELECT', 'IN', 'VALUES', 'RETURNS', 'AS', 'ON', 'AND', 'OR', 'NOT'].includes(p);
+        write('(', /\($/.test(line) ? false : params || listKind === 'insert' ? true : functionCall ? !val('General', 'NoSpaceBetweenProcNameAndBracket', 1) : true);
         if (listKind === 'insert' && val('Insert', 'CRLFBeforeListOfInsertedColumns', 1)) flush(statementBase + val('Insert', 'ColumnValueIndent', 4));
-        write('(', functionCall ? !val('General', 'NoSpaceBetweenProcNameAndBracket', 1) : true);
         if (params) { flush(indent + val('InputOutput', 'Indent', 4)); }
         else if (query) {
           queryStack.push(frame); indent = lineIndent + step; clauseIndent = indent; statementBase = indent; statement = ''; clause = '';
@@ -193,20 +230,21 @@
         if (frame?.params) { one = true; target = indent + val('InputOutput', 'Indent', 4); }
         else if (frame?.listKind) {
           one = !!val('Insert', { insert: 'OneInsertedColumnInLine', values: 'OneValuesExpressionInLine', matching: 'OneMatchingColumnInLine' }[frame.listKind]);
-          target = statementBase + val('Insert', 'ColumnValueIndent', 4);
+          target = statementBase + (frame.listKind === 'matching' ? val('Insert', 'IndentBeforeMATCHINGColumns', val('Insert', 'ColumnValueIndent', 4)) : val('Insert', 'ColumnValueIndent', 4));
         }
         else if (atListLevel) {
           if (clause === 'SELECT') { one = !!val('Select', 'OneColumnInLine', 1); before = !!val('Select', 'CRLFBeforeCommaInColumnList', 1); target = statementBase + val('Select', 'IndentBeforeColumn', 7) - 2; }
           else if (clause === 'ORDER_BY' || clause === 'GROUP_BY') { one = !!val('Select', 'OneOrderByItemInLine', 1); before = !!val('Select', 'CRLFBeforeCommaInOrderByList', 1); target = statementBase + val('Select', `IndentBefore${clause}Items`, 9) - 2; }
           else if (clause === 'SET') { one = !!val('Update', 'OneColumnValueExpressionInLine', 1); before = !!val('Update', 'CRLFBeforeCommaInColumnList', 1); target = statementBase + val('Update', 'IndentBeforeFieldValue', 4); }
-          else if (clause === 'INTO') { one = !!val(statement || 'Select', 'OneVariableInLine', 0); before = !!val('Select', 'CRLFBeforeCommaInVarsList'); }
+          else if (clause === 'INTO') { one = !!val(statement || 'Select', statement === 'Select' ? 'OneVariableInLine' : 'OneIntoVariableInLine', 0); before = statement === 'Select' && !!val('Select', 'CRLFBeforeCommaInVarsList'); }
+          else if (clause === 'RETURNING') { one = !!val(statement, 'OneReturningColumnInLine'); target = statementBase + val(statement, 'IndentBeforeRETURNINGColumns', 4); }
         }
         if (one && before) { flush(target); write(','); line += val('General', 'SpaceAfterComma', 1) ? ' ' : ''; }
         else { write(',', false); if (one) flush(target); else if (val('General', 'SpaceAfterComma', 1) && !(frame?.type && val('General', 'NoSpaceAfterCommaInDatatypes', 1))) line += ' '; }
         prev = t; continue;
       }
       if (u === ';' || u === '^' || t.kind === 'terminator') {
-        write(v, false); flush(indent); pendingIndent = null; statement = ''; clause = ''; clauseIndent = indent; signature = false; condition = false; forLoop = false;
+        write(v, false); flush(indent); pendingIndent = null; statement = ''; clause = ''; clauseIndent = indent; signature = false; condition = false; forLoop = false; declaration = false;
         if (blanks && tokens[i + 1]?.upper !== 'END') for (let k = 0; k < blanks; k++) lines.push('');
         prev = t; continue;
       }
@@ -214,14 +252,14 @@
         const inExpression = frames.length && !frames.at(-1).query;
         if (u === 'RETURNS' && routine) { if (val('InputOutput', 'CRLFBeforeRETURNS', 1)) flush(indent); signature = true; }
         if (u === 'AS' && routine && frames.length === 0) { flush(indent); signature = false; }
-        if (u === 'DECLARE') { flush(indent + val('DeclareSection', 'IndentBeforeDECLARE')); signature = false; }
+        if (u === 'DECLARE') { flush(indent + val('DeclareSection', 'IndentBeforeDECLARE')); signature = false; declaration = true; declarationIndent = indent; }
         if (u === 'FOR' || u === 'WHILE' || u === 'IF') {
-          if (!inExpression) { flush(indent); condition = u === 'IF'; forLoop = u === 'FOR'; statement = ''; clause = ''; }
+          if (!inExpression && !declaration) { flush(indent); condition = u === 'IF'; forLoop = u === 'FOR'; statement = ''; clause = ''; }
         }
         const caseBlock = blocks.at(-1)?.kind === 'case' ? blocks.at(-1) : null;
         if (caseBlock && ['WHEN', 'ELSE', 'THEN'].includes(u)) {
           if (val('Case', `CRLFBefore${u}`, u === 'THEN' ? 0 : 1)) flush(caseBlock.indent + val('Case', `IndentBefore${u}`, step));
-          write(wordCase(t)); if (val('Case', `CRLFAfter${u}`)) flush(caseBlock.indent + step * 2);
+          write(wordCase(t)); if (val('Case', `CRLFAfter${u}`)) flush(caseBlock.indent + val('Case', 'IndentBeforeTHENExpression', step * 2));
           prev = t; continue;
         }
         if (!inExpression && ['THEN', 'ELSE', 'DO'].includes(u) && statement !== 'Merge') {
@@ -235,9 +273,18 @@
         }
         if (!inExpression) {
           if (u === 'SELECT') {
+            const previousStatement = statement;
             statement = 'Select'; clause = 'SELECT';
             statementBase = pendingIndent ?? (forLoop ? indent + val('For', 'SelectExecuteIndent', 4) : indent);
-            if (line.trim() && p !== '(') flush(statementBase);
+            if (declaration) {
+              statementBase = declarationIndent + val('DeclareSection', 'IndentBeforeSELECT', 4);
+              if (val('DeclareSection', 'CRLFBeforeSELECT', 1)) flush(statementBase);
+            } else if (previousStatement === 'Insert') {
+              statementBase = indent + val('Insert', 'IndentBeforeSELECT');
+              if (val('Insert', 'CRLFBeforeSELECT', 1)) flush(statementBase);
+            } else if (forLoop) {
+              if (val('For', 'CRLFBeforeSELECT', 1)) flush(statementBase);
+            } else if (line.trim() && p !== '(') flush(statementBase);
           }
           else if (['INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(u) && !(u === 'UPDATE' && p === 'OR')) {
             statement = u[0] + u.slice(1).toLowerCase(); clause = ''; statementBase = pendingIndent ?? indent;
@@ -251,12 +298,14 @@
           if (['LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'CROSS', 'NATURAL'].includes(u) && (n === 'JOIN' || n === 'OUTER')) { c = 'JOIN'; joinPrefix = true; }
           const isClause = clauses.includes(c) && c !== 'SELECT' && !(c === 'SET' && !statement) && !(u === 'JOIN' && /^(LEFT|RIGHT|INNER|OUTER|FULL|CROSS|NATURAL)$/.test(p || ''));
           if (isClause && statement) {
-            clause = c; const sec = statement;
-            if (val(sec, `CRLFBefore${c}`, 1)) flush(statementBase + val(sec, `IndentBefore${c}`));
+            const sec = statement;
+            const initialInsertInto = sec === 'Insert' && c === 'INTO' && !clause;
+            clause = c;
+            if (!initialInsertInto && val(sec, `CRLFBefore${c}`, 1)) flush(statementBase + val(sec, `IndentBefore${c}`));
             write(wordCase(t));
             if (consumed) { write(wordCase(next)); i++; }
-            clauseIndent = statementBase + val(sec, `IndentBefore${c}Items`, c === 'WHERE' || c === 'JOIN' ? 4 : 0);
-            if (val(sec, `CRLFAfter${c}`) && !joinPrefix) flush(clauseIndent);
+            clauseIndent = statementBase + (c === 'RETURNING' ? val(sec, 'IndentBeforeRETURNINGColumns', 4) : c === 'MATCHING' ? val(sec, 'IndentBeforeMATCHINGColumns', 4) : val(sec, `IndentBefore${c}Items`, c === 'WHERE' || c === 'JOIN' ? 4 : 0));
+            if (val(sec, `CRLFAfter${c}`) && !joinPrefix && !initialInsertInto) flush(clauseIndent);
             prev = consumed ? next : t; continue;
           }
           if ((u === 'AND' || u === 'OR') && !frames.some(f => f.params)) {
@@ -275,13 +324,30 @@
           if (u === 'SELECT' && val('Select', 'CRLFBeforeColumnsList')) { write(wordCase(t)); flush(indent + val('Select', 'IndentBeforeColumn', 7)); prev = t; continue; }
         }
       }
+      // IF expressions are parenthesized; apply only at their outer boolean level,
+      // keeping operators inside functions, subqueries and BETWEEN untouched.
+      if (t.kind === 'word' && condition && !queryStack.length && frames.length <= 1 && ['AND', 'OR'].includes(u)) {
+        let between = false;
+        if (u === 'AND') for (let k = i - 1; k >= 0; k--) {
+          const w = tokens[k].upper;
+          if (w === 'BETWEEN') { between = true; break; }
+          if (['AND', 'OR', 'IF', ';'].includes(w)) break;
+        }
+        if (!between) {
+          if (val('IfThenElse', `CRLFBefore${u}`)) flush(indent + step);
+          write(wordCase(t));
+          if (val('IfThenElse', `CRLFAfter${u}`)) flush(indent + step);
+          prev = t; continue;
+        }
+      }
       let space = !!line && !/[ (:.]$/.test(line) && v !== '.' && v !== ':' && p !== ':';
       if (p === ',') space = false;
       if (u === '.' || p === '.') space = false;
       if (u === ':' && prev && !['(', ','].includes(p)) space = !/[\s(]$/.test(line);
       const value = wordCase(t);
       if (lineIndent + line.length + value.length > margin && space && (p === ',' || ['AND', 'OR', '||'].includes(p))) flush(clauseIndent || indent + step);
-      write(value, space); prev = t;
+      write(value, space); if (typePadding.has(i) && space) line = line.slice(0, -value.length) + ' '.repeat(typePadding.get(i)) + value;
+      prev = t;
     }
     if (frames.length) throw new Error('Не закрыта круглая скобка.');
     flush();

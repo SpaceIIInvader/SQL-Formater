@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -19,6 +20,7 @@ public class Row {
     public string source { get; set; } public string preview { get; set; }
 }
 public class Plan {
+    public Dictionary<string, Dictionary<string, int>> settings { get; set; }
     public string sql { get; set; }
     public string root { get; set; } public List<Row> rows { get; set; }
     public string backup { get; set; } public int saved { get; set; }
@@ -30,6 +32,7 @@ public class AppSettings {
     public string FolderPath { get; set; }
     public string PresetFile { get; set; }
     public string PresetText { get; set; }
+    public bool PresetEdited { get; set; }
     public bool IncludeSubfolders { get; set; }
     public int CaseSelection { get; set; }
     public int WindowWidth { get; set; }
@@ -47,7 +50,7 @@ public static class SettingsStore {
         notice = "";
         if (!File.Exists(file)) return new AppSettings();
         try {
-            if (new FileInfo(file).Length > 131072) throw new Exception("Файл настроек больше 128 КБ.");
+            if (new FileInfo(file).Length > 1048576) throw new Exception("Файл настроек больше 1 МБ.");
             var result = new JavaScriptSerializer().Deserialize<AppSettings>(File.ReadAllText(file, Encoding.UTF8));
             if (result == null) throw new Exception("Пустой объект настроек.");
             if (result.Version != 1) throw new Exception("Неизвестная версия настроек.");
@@ -70,7 +73,7 @@ public static class SettingsStore {
             var json = new JavaScriptSerializer();
             var values = new Dictionary<string, object> {
                 { "Version", value.Version }, { "FolderPath", value.FolderPath },
-                { "PresetFile", value.PresetFile }, { "PresetText", value.PresetText },
+                { "PresetFile", value.PresetFile }, { "PresetText", value.PresetText }, { "PresetEdited", value.PresetEdited },
                 { "IncludeSubfolders", value.IncludeSubfolders }, { "CaseSelection", value.CaseSelection },
                 { "WindowWidth", value.WindowWidth }, { "WindowHeight", value.WindowHeight },
                 { "WindowMaximized", value.WindowMaximized }, { "LastBackupFolder", value.LastBackupFolder }
@@ -228,6 +231,10 @@ public static class SqlComparison {
     }
 }
 public class MainWindow : Form {
+    DataGridView presetGrid = new DataGridView();
+    Label presetStatus = new Label();
+    string presetEditorSource;
+    bool presetEdited, fillingPresetGrid;
     TextBox compareLeft = new TextBox(), compareRight = new TextBox();
     DataGridView differenceGrid = new DataGridView();
     Label compareStatus = new Label();
@@ -295,7 +302,7 @@ public class MainWindow : Form {
         backup.Text = "Открыть резервную копию"; backup.Dock = DockStyle.Fill; backup.Enabled = false; footer.Controls.Add(summary, 0, 0); footer.Controls.Add(backup, 1, 0); layout.Controls.Add(footer, 0, 5);
         progress.Dock = DockStyle.Fill; layout.Controls.Add(progress, 0, 6);
         chooseFolder.Click += delegate { using (var dialog = new FolderBrowserDialog { Description = "Папка с отдельными SQL-файлами процедур или пакетов", ShowNewFolderButton = false, SelectedPath = folder.Text }) if (dialog.ShowDialog(this) == DialogResult.OK) folder.Text = dialog.SelectedPath; };
-        choosePreset.Click += delegate { using (var dialog = new OpenFileDialog { Filter = "INI-пресеты (*.ini)|*.ini|Все файлы (*.*)|*.*", FileName = selectedPresetFile }) if (dialog.ShowDialog(this) == DialogResult.OK) try { preset = File.ReadAllText(dialog.FileName, Encoding.UTF8); selectedPresetFile = dialog.FileName; presetPath.Text = dialog.FileName; InvalidatePlan(); InvalidateCode(); } catch (Exception e) { ShowError(e); } };
+        choosePreset.Click += delegate { using (var dialog = new OpenFileDialog { Filter = "INI-пресеты (*.ini)|*.ini|Все файлы (*.*)|*.*", FileName = selectedPresetFile }) if (dialog.ShowDialog(this) == DialogResult.OK) try { SelectPreset(File.ReadAllText(dialog.FileName, Encoding.UTF8), dialog.FileName); } catch (Exception e) { ShowError(e); } };
         scan.Click += async delegate { await Analyze(); }; save.Click += async delegate { await SavePlan(); };
         folder.TextChanged += delegate { InvalidatePlan(); }; recursive.CheckedChanged += delegate { InvalidatePlan(); }; charCase.SelectedIndexChanged += delegate { InvalidatePlan(); };
         files.SelectedIndexChanged += delegate { if (files.SelectedItems.Count == 0) return; var r = (Row)files.SelectedItems[0].Tag; original.Text = WindowsLines(r.source ?? ""); formatted.Text = WindowsLines(r.preview ?? r.message); };
@@ -310,7 +317,9 @@ public class MainWindow : Form {
         FormClosed += delegate { settingsTimer.Dispose(); };
         InitializeCodeMode(layout, row2);
         InitializeComparisonMode();
+        InitializePresetMode();
         RestoreSettings();
+        try { FillPresetGrid(preset); } catch (Exception e) { presetStatus.Text = "Ошибка пресета: " + e.Message; }
     }
     void InitializeCodeMode(TableLayoutPanel folderLayout, TableLayoutPanel presetRow) {
         Controls.Remove(folderLayout);
@@ -375,6 +384,137 @@ public class MainWindow : Form {
             }
         };
         Shown += delegate { codeInput.Focus(); };
+    }
+    void InitializePresetMode() {
+        var page = new TabPage("Настройки пресета"); modes.TabPages.Add(page);
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(8) };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54)); page.Controls.Add(layout);
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
+        var apply = new Button { Name = "applyPreset", Text = "Применить настройки", AutoSize = true, Height = 34, BackColor = Color.FromArgb(200, 234, 180) };
+        var export = new Button { Text = "Сохранить INI как…", AutoSize = true, Height = 34 };
+        var undo = new Button { Text = "Отменить правки", AutoSize = true, Height = 34, CausesValidation = false };
+        var reset = new Button { Text = "Встроенный пресет", AutoSize = true, Height = 34, CausesValidation = false };
+        toolbar.Controls.AddRange(new Control[] { apply, export, undo, reset }); layout.Controls.Add(toolbar, 0, 0);
+        layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Измените столбец «Значение» и нажмите «Применить настройки». Изменения действуют во всех режимах.\r\n0 — нет, 1 — да; регистр: 0 — сохранить, 1 — нижний, 2 — верхний, 3 — с заглавной. Для него сверху выберите «Регистр из пресета»." }, 0, 1);
+        presetGrid.Name = "presetGrid"; presetGrid.Dock = DockStyle.Fill; presetGrid.RowHeadersVisible = false;
+        presetGrid.AllowUserToAddRows = presetGrid.AllowUserToDeleteRows = false; presetGrid.AutoGenerateColumns = false;
+        presetGrid.BackgroundColor = Color.White; presetGrid.SelectionMode = DataGridViewSelectionMode.CellSelect;
+        foreach (string title in new string[] { "Секция", "Параметр", "Значение", "Описание", "Поддержка" }) {
+            int index = presetGrid.Columns.Count;
+            var column = new DataGridViewTextBoxColumn { HeaderText = title, ReadOnly = index != 2, SortMode = DataGridViewColumnSortMode.NotSortable };
+            column.Width = index == 0 ? 130 : index == 1 ? 250 : index == 2 ? 80 : 155;
+            if (index == 3) { column.AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill; column.MinimumWidth = 200; }
+            presetGrid.Columns.Add(column);
+        }
+        presetGrid.CellValidating += delegate(object sender, DataGridViewCellValidatingEventArgs e) {
+            if (e.ColumnIndex != 2 || fillingPresetGrid) return;
+            int value;
+            if (!Int32.TryParse(Convert.ToString(e.FormattedValue), out value) || value < 0 || value > 1000) {
+                presetGrid.Rows[e.RowIndex].ErrorText = "Введите целое число от 0 до 1000."; e.Cancel = true;
+                presetStatus.Text = "Значение должно быть целым числом от 0 до 1000. Esc отменяет редактирование ячейки.";
+            } else presetGrid.Rows[e.RowIndex].ErrorText = "";
+        };
+        presetGrid.CellValueChanged += delegate { if (!fillingPresetGrid) presetStatus.Text = "Есть неприменённые правки. Нажмите «Применить настройки»."; };
+        layout.Controls.Add(presetGrid, 0, 2);
+        presetStatus.Name = "presetStatus"; presetStatus.Dock = DockStyle.Fill; layout.Controls.Add(presetStatus, 0, 3);
+        apply.Click += delegate { ApplyPresetChanges(); };
+        undo.Click += delegate { presetGrid.CancelEdit(); FillPresetGrid(preset); };
+        reset.Click += delegate { try { SelectPreset(Engine.Preset, ""); } catch (Exception e) { presetStatus.Text = "Ошибка: " + e.Message; } };
+        export.Click += delegate {
+            using (var dialog = new SaveFileDialog { Filter = "INI-пресеты (*.ini)|*.ini", FileName = selectedPresetFile.Length == 0 ? "custom-preset.ini" : Path.GetFileName(selectedPresetFile), DefaultExt = "ini", AddExtension = true }) {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try { SavePresetFile(dialog.FileName); } catch (Exception e) { presetStatus.Text = "Не удалось сохранить: " + e.Message; }
+            }
+        };
+    }
+    static string DescribePresetOption(string key) {
+        switch (key) {
+            case "BlockIndent": return "Размер отступа блока, пробелы";
+            case "IdentCharCase": return "Регистр идентификаторов (0–3)";
+            case "KeywordCharCase": return "Регистр ключевых слов SQL (0–3)";
+            case "RightMargin": return "Мягкий предел длины строки (движок: 40–500)";
+            case "KeepEmptyLines": return "Сохранять пустые строки (0/1)";
+            case "EmptyLinesNumber": return "Количество пустых строк";
+            case "SpaceAfterComma": return "Пробел после запятой (0/1)";
+            case "NoSpaceAfterCommaInDatatypes": return "Без пробела после запятой в типах (0/1)";
+            case "NoSpaceBetweenProcNameAndBracket": return "Без пробела между именем и скобкой (0/1)";
+            case "StartSingleLineCommentsFromFirstColumn": return "Комментарии -- с первой колонки (0/1)";
+            case "SpaceAfterOpeningBracket": return "Пробел после открывающей скобки (0/1)";
+            case "SpaceBeforeClosingBracket": return "Пробел перед закрывающей скобкой (0/1)";
+            case "AlignTypeDefinitions": return "Выравнивание определений типов (0/1)";
+        }
+        if (key.StartsWith("CRLFBefore")) return "Перенос строки перед " + key.Substring(10).Replace('_', ' ') + " (0/1)";
+        if (key.StartsWith("CRLFAfter")) return "Перенос строки после " + key.Substring(9).Replace('_', ' ') + " (0/1)";
+        if (key.StartsWith("IndentBefore")) return "Отступ перед " + key.Substring(12).Replace('_', ' ') + ", пробелы";
+        if (key.StartsWith("NoCRLFBetween")) return "Без переноса между " + key.Substring(13).Replace('_', ' ') + " (0/1)";
+        if (key.StartsWith("One")) return "По одному элементу на строку: " + key.Substring(3) + " (0/1)";
+        if (key.EndsWith("Indent") || key == "Indent") return "Размер отступа, пробелы";
+        return "Числовой параметр INI (0–1000)";
+    }
+    void FillPresetGrid(string text) { FillPresetGrid(text, Engine.Call(new { operation = "preset", presetText = text })); }
+    void FillPresetGrid(string text, Plan metadata) {
+        fillingPresetGrid = true;
+        try {
+            presetGrid.CancelEdit(); presetGrid.Rows.Clear();
+            var ignored = new HashSet<string>(metadata.unsupported);
+            foreach (var section in metadata.settings) foreach (var entry in section.Value) {
+                bool supported = !ignored.Contains("[" + section.Key + "] " + entry.Key);
+                int row = presetGrid.Rows.Add(section.Key, entry.Key, entry.Value, DescribePresetOption(entry.Key), supported ? "Поддерживается" : "Не применяется");
+                if (!supported) presetGrid.Rows[row].DefaultCellStyle.ForeColor = Color.FromArgb(145, 100, 25);
+            }
+            presetEditorSource = text;
+            presetStatus.Text = "Параметров: " + presetGrid.Rows.Count + ". Не применяются движком: " + metadata.unsupported.Count + ". " + String.Join(" · ", metadata.warnings);
+        } finally { fillingPresetGrid = false; }
+    }
+    internal void SelectPreset(string text, string file) {
+        var metadata = Engine.Call(new { operation = "preset", presetText = text });
+        preset = text; selectedPresetFile = file; presetEdited = false; UpdatePresetPath();
+        FillPresetGrid(text, metadata); PresetChanged();
+    }
+    void UpdatePresetPath() { presetPath.Text = (selectedPresetFile.Length == 0 ? "Встроенный preset_ibeexpert.ini" : selectedPresetFile) + (presetEdited ? " (изменён в приложении)" : ""); }
+    void PresetChanged() {
+        InvalidatePlan(); InvalidateCode(); ClearDifferences();
+        compareStatus.Text = "Пресет изменён. При необходимости повторите выравнивание и сравнение.";
+        unsupportedOptions = null; compatibility.Text = "Пресет обновлён. Поддержка параметров указана во вкладке настроек.";
+        QueueSettings(); PersistSettings();
+    }
+    internal bool ApplyPresetChanges() {
+        try {
+            if (!presetGrid.EndEdit()) return false;
+            if (presetEditorSource == null) throw new Exception("Загрузите корректный INI-пресет.");
+            var values = new Dictionary<string, string>();
+            foreach (DataGridViewRow row in presetGrid.Rows) {
+                int value;
+                if (!Int32.TryParse(Convert.ToString(row.Cells[2].Value), out value) || value < 0 || value > 1000) throw new Exception("[" + row.Cells[0].Value + "] " + row.Cells[1].Value + ": требуется целое число от 0 до 1000.");
+                values[Convert.ToString(row.Cells[0].Value) + "\0" + row.Cells[1].Value] = value.ToString();
+            }
+            string section = "";
+            var lines = presetEditorSource.Split('\n');
+            for (int i = 0; i < lines.Length; i++) {
+                var header = Regex.Match(lines[i].Trim(), @"^\[([^\]]+)\]\s*(?:[;#].*)?$");
+                if (header.Success) { section = header.Groups[1].Value; continue; }
+                var pair = Regex.Match(lines[i], @"^(\s*([^=]+?)\s*=\s*)-?\d+(\s*)$");
+                string value;
+                if (pair.Success && values.TryGetValue(section + "\0" + pair.Groups[2].Value.Trim(), out value)) lines[i] = pair.Groups[1].Value + value + pair.Groups[3].Value;
+            }
+            string candidate = String.Join("\n", lines);
+            var metadata = Engine.Call(new { operation = "preset", presetText = candidate });
+            bool changed = candidate != preset;
+            preset = candidate; presetEdited = presetEdited || changed; UpdatePresetPath();
+            FillPresetGrid(candidate, metadata);
+            if (changed) PresetChanged();
+            presetStatus.Text = "Настройки применены ко всем режимам и сохранены для следующего запуска. INI на диске изменяется только через «Сохранить INI как…».";
+            return true;
+        } catch (Exception e) { presetStatus.Text = "Ошибка: " + e.Message; return false; }
+    }
+    internal void SavePresetFile(string file) {
+        if (!ApplyPresetChanges()) return;
+        File.WriteAllText(file, preset, new UTF8Encoding(false));
+        selectedPresetFile = file; presetEdited = false; UpdatePresetPath(); PersistSettings();
+        presetStatus.Text = "Пресет сохранён: " + file;
     }
     void InitializeComparisonMode() {
         var page = new TabPage("Сравнение SQL"); modes.TabPages.Add(page);
@@ -537,11 +677,14 @@ public class MainWindow : Form {
             folder.Text = preferences.FolderPath ?? ""; recursive.Checked = preferences.IncludeSubfolders;
             charCase.SelectedIndex = preferences.CaseSelection;
             selectedPresetFile = preferences.PresetFile ?? "";
-            if (selectedPresetFile.Length > 0) {
+            if (preferences.PresetEdited && !String.IsNullOrEmpty(preferences.PresetText)) {
+                preset = preferences.PresetText; presetEdited = true;
+            } else if (selectedPresetFile.Length > 0) {
                 if (File.Exists(selectedPresetFile)) { preset = File.ReadAllText(selectedPresetFile, Encoding.UTF8); presetPath.Text = selectedPresetFile; }
                 else if (!String.IsNullOrEmpty(preferences.PresetText)) { preset = preferences.PresetText; presetPath.Text = selectedPresetFile + " (сохранённая копия)"; }
                 else { selectedPresetFile = ""; notice += " Пресет не найден; используется встроенный."; }
             }
+            if (presetEdited || selectedPresetFile.Length == 0 || File.Exists(selectedPresetFile)) UpdatePresetPath();
             var screen = Screen.PrimaryScreen.WorkingArea;
             Size = new Size(Math.Min(preferences.WindowWidth, screen.Width), Math.Min(preferences.WindowHeight, screen.Height));
             if (preferences.WindowMaximized) WindowState = FormWindowState.Maximized;
@@ -558,7 +701,7 @@ public class MainWindow : Form {
             var size = WindowState == FormWindowState.Normal ? Size : RestoreBounds.Size;
             SettingsStore.Save(settingsFile, new AppSettings {
                 FolderPath = folder.Text, PresetFile = selectedPresetFile,
-                PresetText = selectedPresetFile.Length > 0 ? preset : null,
+                PresetText = selectedPresetFile.Length > 0 || presetEdited ? preset : null, PresetEdited = presetEdited,
                 IncludeSubfolders = recursive.Checked, CaseSelection = charCase.SelectedIndex,
                 WindowWidth = size.Width, WindowHeight = size.Height,
                 WindowMaximized = WindowState == FormWindowState.Maximized, LastBackupFolder = backupPath
@@ -627,6 +770,7 @@ public static class Program {
     static void SelfTest(string report) {
         string root = Path.Combine(Path.GetTempPath(), "SQLAtelier-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
         string settingsPath = Path.Combine(root, "SQLAtelier.settings.json");
+        CheckPresetSettings(root);
         using (var window = new MainWindow(settingsPath)) {
             window.CreateControl(); window.PerformLayout(); if (window.Controls.Count == 0) throw new Exception("Window layout initialization failed");
             CheckComparison(window);
@@ -634,7 +778,7 @@ public static class Program {
             var input = (TextBox)window.Controls.Find("codeInput", true)[0];
             var output = (TextBox)window.Controls.Find("codeOutput", true)[0];
             var copy = (Button)window.Controls.Find("copyCode", true)[0];
-            if (tabs.TabCount != 3 || tabs.SelectedIndex != 0 || input.ReadOnly || !output.ReadOnly) throw new Exception("Code must be the default editable mode");
+            if (tabs.TabCount != 4 || tabs.SelectedIndex != 0 || input.ReadOnly || !output.ReadOnly) throw new Exception("Code must be the default editable mode");
             string pasted = "SELECT a,b,'Русский текст' FROM t WHERE x=1;";
             input.Text = pasted; Wait(window.FormatCode());
             if (input.Text != pasted || !output.Text.Contains("'Русский текст'") || !copy.Enabled || !output.Text.Contains("\r\n")) throw new Exception("Text formatting or source preservation failed");
@@ -712,6 +856,49 @@ public static class Program {
         var second = Engine.Call(new { operation = "analyze", folder = root, presetText = Engine.Preset, recursive = true });
         if (second.rows.Count != 1 || second.rows[0].status != "unchanged") throw new Exception("Idempotence failed");
         File.WriteAllText(report, "PASS: optional vertical and horizontal bidirectional proportional scrolling, enable/disable, different text lengths, short text, scroll preserves text; default code tab, pasted SQL formatting, original text preservation, Unicode, CRLF, case override, stale result invalidation, invalid and empty SQL, window initialization, automatic settings save, settings roundtrip across restart, cached preset, corrupt settings preservation/recovery, embedded runtime, INI, analyze, save, exact backup, backup exclusion, idempotence.\r\nTest folder: " + root, Encoding.UTF8);
+    }
+    static DataGridViewRow PresetRow(MainWindow window, string section, string key) {
+        var grid = (DataGridView)window.Controls.Find("presetGrid", true)[0];
+        foreach (DataGridViewRow row in grid.Rows) if (Convert.ToString(row.Cells[0].Value) == section && Convert.ToString(row.Cells[1].Value) == key) return row;
+        throw new Exception("Preset setting missing: " + section + "/" + key);
+    }
+    static void CheckPresetSettings(string root) {
+        string settings = Path.Combine(root, "preset-test.settings.json"), file = Path.Combine(root, "chosen.ini"), exported = Path.Combine(root, "exported.ini");
+        string source = "; Keep this comment\r\n" + Engine.Preset + "\r\n[Future]\r\nUnknown=7\r\n";
+        File.WriteAllText(file, source, new UTF8Encoding(false));
+        using (var window = new MainWindow(settings)) {
+            window.SelectPreset(source, file);
+            if (Convert.ToString(PresetRow(window, "DeclareSection", "CRLFBeforeSELECT").Cells[4].Value) != "Поддерживается" ||
+                Convert.ToString(PresetRow(window, "InputOutput", "AlignTypeDefinitions").Cells[4].Value) != "Поддерживается") throw new Exception("Implemented preset rules still marked unsupported");
+            if (Convert.ToString(PresetRow(window, "Future", "Unknown").Cells[4].Value) != "Не применяется") throw new Exception("Unsupported preset setting not marked");
+            var input = (TextBox)window.Controls.Find("codeInput", true)[0];
+            var output = (TextBox)window.Controls.Find("codeOutput", true)[0];
+            input.Text = "select a from t;"; Wait(window.FormatCode());
+            PresetRow(window, "General", "KeywordCharCase").Cells[2].Value = 2;
+            if (!window.ApplyPresetChanges() || output.TextLength != 0) throw new Exception("Preset apply did not invalidate result");
+            Wait(window.FormatCode());
+            if (!output.Text.Contains("SELECT") || File.ReadAllText(file) != source) throw new Exception("Preset edits failed or original INI was overwritten");
+            PresetRow(window, "General", "BlockIndent").Cells[2].Value = 1001;
+            if (window.ApplyPresetChanges()) throw new Exception("Invalid preset value accepted");
+            PresetRow(window, "General", "BlockIndent").Cells[2].Value = 4;
+            window.SavePresetFile(exported);
+            string saved = File.ReadAllText(exported);
+            if (!saved.Contains("; Keep this comment") || !saved.Contains("Unknown=7") || !saved.Contains("KeywordCharCase=2") || !saved.Contains("BlockIndent=4")) throw new Exception("INI export lost settings or comments");
+            PresetRow(window, "General", "KeywordCharCase").Cells[2].Value = 1;
+            if (!window.ApplyPresetChanges()) throw new Exception("Custom preset update failed");
+            if (File.ReadAllText(exported) != saved) throw new Exception("Applied edits overwrote exported INI");
+            try { window.SelectPreset("[General]\nBlockIndent=bad", file); throw new Exception("Invalid INI selected"); }
+            catch (Exception e) { if (e.Message == "Invalid INI selected") throw; }
+        }
+        using (var restored = new MainWindow(settings)) {
+            if (Convert.ToInt32(PresetRow(restored, "General", "KeywordCharCase").Cells[2].Value) != 1 || Convert.ToInt32(PresetRow(restored, "General", "BlockIndent").Cells[2].Value) != 4) throw new Exception("Edited preset lost on restart");
+            restored.SelectPreset(Engine.Preset, "");
+            PresetRow(restored, "General", "BlockIndent").Cells[2].Value = 6;
+            if (!restored.ApplyPresetChanges()) throw new Exception("Built-in preset edit failed");
+        }
+        using (var restored = new MainWindow(settings)) {
+            if (Convert.ToInt32(PresetRow(restored, "General", "BlockIndent").Cells[2].Value) != 6) throw new Exception("Built-in preset changes lost on restart");
+        }
     }
     static void CheckComparison(MainWindow window) {
         var equalLines = new List<string>();

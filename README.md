@@ -4,7 +4,7 @@
 
 ## Запуск
 
-- **Приложение:** запустите `desktop/SQLAtelier.exe`. Установка Node.js не нужна.
+- **Приложение:** запустите `windows-app/SQLAtelier.exe`. Установка Node.js не нужна.
   Настройки сохраняются рядом с EXE; они исключены из Git.
   Главная вкладка **SQL-код**: вставьте SQL слева через Ctrl+V и нажмите
   **Форматировать** или **Ctrl+Enter**. Справа появится результат, исходник
@@ -25,7 +25,12 @@
   изменений. Нажмите на строку скрытого блока, чтобы раскрыть его;
   **Свернуть все совпадения** снова скрывает блоки. Галочка
   **Скрывать совпадающие строки** переключает полный и свёрнутый вид.
-- **Сайт:** откройте `website/index.html` в браузере. Сохраняйте рядом папку `shared`.
+  На вкладке **Настройки пресета** можно менять значения выбранного INI
+  в таблице с описаниями и отметками поддержки. **Применить настройки**
+  обновляет пресет во всех режимах и сохраняет изменения между запусками.
+  Исходный INI автоматически не перезаписывается; используйте
+  **Сохранить INI как…**, чтобы сохранить отдельный файл.
+- **Сайт:** откройте `website/index.html` в браузере. Все необходимые файлы находятся внутри `website`.
 - **Локальный сервер** (при установленном Node.js):
 
   ```powershell
@@ -38,26 +43,35 @@
 ## Структура
 
 ```text
-website/              Интерфейс сайта и локальный сервер
-desktop/
-  SQLAtelier.exe      Готовое приложение Windows x64
-  src/Desktop.cs      Исходник интерфейса Windows
-  build/              Скрипт сборки приложения
-shared/               Общее ядро форматтера и обработка файлов
-presets/              Пресет форматирования
-tests/                Проверки форматтера и пакетной обработки
-docs/                 Инструкции пользователя
-licenses/             Лицензии встроенного Node.js и компонентов
+website/                         Самостоятельная папка сайта
+  index.html                     Открыть сайт в браузере
+  app.js, preset.js, formatter.js Интерфейс, встроенный пресет и движок
+  server.cjs                     Необязательный локальный сервер
+  presets/                       INI-пресет сайта
+  docs/, tests/                  Инструкция и проверки сайта
+windows-app/                     Самостоятельная папка Windows-приложения
+  SQLAtelier.exe                 Готовое приложение Windows x64
+  src/                          C# интерфейс, JS-движок и обработка файлов
+  build/                        Скрипт сборки и промежуточные файлы
+  presets/                      INI-пресет приложения
+  docs/, tests/, licenses/       Инструкции, проверки и лицензии Node.js
 ```
+
+Каждую папку можно переносить отдельно: внешних зависимостей на соседнюю папку нет.
+Подробнее: `website/README.md` и `windows-app/README.md`.
+Копии движка и пресета находятся внутри каждой версии. При общей доработке
+форматирования обновляйте обе копии и запускайте оба набора проверок.
 
 ## Проверки
 
 Из корня проекта, при установленном Node.js:
 
 ```powershell
-node tests/test.cjs
-node tests/test-desktop.cjs
-node tests/test-text.cjs
+node website/tests/test.cjs
+node website/tests/test-server.cjs
+node windows-app/tests/test.cjs
+node windows-app/tests/test-desktop.cjs
+node windows-app/tests/test-text.cjs
 ```
 
 ## Сборка Windows
@@ -66,18 +80,18 @@ node tests/test-text.cjs
 `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`.
 
 ```powershell
-powershell -NoProfile -File desktop/build/build-desktop.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File windows-app/build/build-desktop.ps1
 ```
 
-Скрипт обновляет `desktop/SQLAtelier.exe` и встраивает установленный Node.js.
+Скрипт обновляет `windows-app/SQLAtelier.exe` и встраивает установленный Node.js.
 Файлы `node.gz`, `BuildInfo.cs` и промежуточный EXE создаются автоматически.
-При смене версии Node.js проверьте соответствие `licenses/node-license.txt`.
+При смене версии Node.js проверьте соответствие `windows-app/licenses/node-license.txt`.
 
 ## Ограничения
 
 Используется собственное ядро, поддерживающее часть параметров IBExpert INI.
+Реализованы выравнивание типов параметров и переменных, настройки SELECT
+в объявлениях курсоров, списков MATCHING/RETURNING и переносов условий IF.
+Образец процедуры включён в `tests/fixtures/set-item-good.sql` внутри каждой версии.
 Точное совпадение с IBExpert не гарантируется. SQL не выполняется в базе данных.
-См. `docs/browser-guide.txt` и `docs/windows-guide.txt`.
-
-EXE обновлён для режима SQL-кода и пересобран с исходным встроенным Node.js. Старый EXE, резервные
-копии настроек и старые отчёты сохранены в исходном RAR, но не дублируются здесь.
+См. `website/docs/browser-guide.txt` и `windows-app/docs/windows-guide.txt`.

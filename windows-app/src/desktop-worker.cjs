@@ -119,14 +119,20 @@ function formatText(request) {
   const result = format(request.text, settings, options);
   return { sql: result.sql, warnings, unsupported: result.unsupported };
 }
-module.exports = { analyze, save, decode, encode, formatText };
+function inspectPreset(request) {
+  if (typeof request.presetText !== 'string') throw new Error('Ожидается текст INI-пресета.');
+  if (request.presetText.length > 60000) throw new Error('Пресет больше 60 000 символов.');
+  const { settings, warnings } = parseIni(request.presetText);
+  return { settings, warnings, unsupported: require('./formatter.js').unsupported(settings) };
+}
+module.exports = { analyze, save, decode, encode, formatText, inspectPreset };
 if (require.main === module) {
   let input = ''; process.stdin.setEncoding('utf8');
   process.stdin.on('data', chunk => { input += chunk; });
   process.stdin.on('end', async () => {
     try {
       const request = JSON.parse(input);
-      const result = request.operation === 'format' ? formatText(request) : request.operation === 'analyze' ? await analyze(request) : request.operation === 'save' ? await save(request) : (() => { throw new Error('Неизвестная операция.'); })();
+      const result = request.operation === 'preset' ? inspectPreset(request) : request.operation === 'format' ? formatText(request) : request.operation === 'analyze' ? await analyze(request) : request.operation === 'save' ? await save(request) : (() => { throw new Error('Неизвестная операция.'); })();
       process.stdout.write(JSON.stringify({ ok: true, result }));
     } catch (e) { process.stdout.write(JSON.stringify({ ok: false, error: e.message })); process.exitCode = 1; }
   });

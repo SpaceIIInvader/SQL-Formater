@@ -1,5 +1,5 @@
 const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path'), assert = require('node:assert/strict');
-const { analyze, save, decode, encode } = require('../shared/desktop-worker.cjs');
+const { analyze, save, decode, encode } = require('../src/desktop-worker.cjs');
 (async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sql-atelier-worker-test-'));
   const presetText = await fs.readFile(path.join(__dirname, '../presets/preset_ibeexpert.ini'), 'utf8');

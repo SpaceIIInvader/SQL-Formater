@@ -1,12 +1,11 @@
 ﻿$ErrorActionPreference = 'Stop'
 $desktopRoot = Split-Path -Parent $PSScriptRoot
-$projectRoot = Split-Path -Parent $desktopRoot
-$kernelFolder = Join-Path $projectRoot 'shared'
-$desktopSource = Join-Path $projectRoot 'desktop\src\Desktop.cs'
+$kernelFolder = Join-Path $desktopRoot 'src'
+$desktopSource = Join-Path $kernelFolder 'Desktop.cs'
 $formatterSource = Join-Path $kernelFolder 'formatter.js'
 $workerSource = Join-Path $kernelFolder 'desktop-worker.cjs'
-$presetFile = Join-Path $projectRoot 'presets\preset_ibeexpert.ini'
-$licenseFile = Join-Path $projectRoot 'licenses\node-license.txt'
+$presetFile = Join-Path $desktopRoot 'presets\preset_ibeexpert.ini'
+$licenseFile = Join-Path $desktopRoot 'licenses\node-license.txt'
 $runtimeArchive = Join-Path $PSScriptRoot 'node.gz'
 $buildInfo = Join-Path $PSScriptRoot 'BuildInfo.cs'
 $builtExe = Join-Path $PSScriptRoot 'SQLAtelier.build.exe'

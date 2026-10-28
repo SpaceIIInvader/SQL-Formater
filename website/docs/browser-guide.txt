@@ -1,11 +1,12 @@
 SQL Atelier — локальный форматтер Firebird SQL
 
 ЗАПУСК
-Откройте website\index.html двойным щелчком. Интернет, сервер и установка библиотек не нужны.
-Сохраняйте структуру папок website, shared, presets и licenses.
+Откройте index.html из папки website двойным щелчком. Интернет, сервер и установка библиотек не нужны.
+Для переноса сайта скопируйте папку website целиком. Приложение Windows не требуется.
 
 Дополнительный вариант через локальный сервер (если установлен Node.js):
-  node "website\server.cjs"
+Из папки website:
+  node server.cjs
 Затем откройте http://127.0.0.1:8765 . Остановка сервера — Ctrl+C.
 
 РАБОТА
@@ -28,8 +29,30 @@ SQL Atelier — локальный форматтер Firebird SQL
 SELECT/INSERT/UPDATE/DELETE, условия WHERE/JOIN, пустые строки и пробелы.
 Неподдерживаемые параметры перечислены в интерфейсе и не применяются.
 Точного совпадения со всеми правилами IBExpert нет, особенно для сложных
-WITH/MERGE/EXECUTE STATEMENT и выравнивания определений типов.
+WITH/MERGE/EXECUTE STATEMENT и вложенных подзапросов.
 RightMargin — мягкий предел: длинные строковые литералы не разрываются.
+
+ДОПОЛНЕННЫЕ ПРАВИЛА ПРЕСЕТА
+InputOutput.AlignTypeDefinitions выравнивает типы входных параметров
+и RETURNS по самому длинному имени в каждом списке. При 0 выравнивания нет.
+DeclareSection.AlignTypeDefinitions выравнивает типы DECLARE VARIABLE
+внутри одной секции объявлений. Имена, типы, строки и комментарии не меняются.
+DeclareSection.CRLFBeforeSELECT и IndentBeforeSELECT управляют переносом
+и отступом SELECT в DECLARE CURSOR FOR (...), а не обычными запросами тела.
+Insert.CRLFAfterMatching распознаётся в написании приложенного INI;
+имена параметров сопоставляются без учёта регистра букв.
+Insert.IndentBeforeMATCHINGColumns задаёт отступ продолжения списка MATCHING.
+IndentBeforeRETURNINGColumns в Insert, Update и Delete задаёт отступ
+RETURNING при переносе после ключевого слова или между элементами.
+Для переноса каждого элемента включите OneReturningColumnInLine.
+IfThenElse.CRLFBeforeAND/CRLFAfterAND/CRLFBeforeOR/CRLFAfterOR действуют
+на внешнем уровне условия IF, в том числе внутри его внешних скобок.
+AND в BETWEEN не разрывается. Case.IndentBeforeTHENExpression задаёт
+отступ выражения после переноса THEN/ELSE при CRLFAfterTHEN=1.
+Эти настройки работают в браузере и приложении Windows.
+Полного совпадения с IBExpert пока нет: например, EXISTS может разбиваться
+на большее число строк. Если CRLFAfterAND=1 в IfThenElse, условия IF
+переносятся после AND, даже если исходник был записан в одну строку.
 
 Нумерация регистра в приложении: 0 — сохранить, 1 — нижний, 2 — верхний,
 3 — с заглавной буквы. Если ваша версия IBExpert использует другую нумерацию,
@@ -45,7 +68,7 @@ https://ibexpert.com/docu/doku.php?id=02-ibexpert:02-07-ibexpert-options-menu:co
 Это не синтаксический анализатор всех версий Firebird и не компиляция в БД.
 SQL не выполняется и не передаётся по сети. Исходники локальны.
 
-Автоматические проверки (Node.js):
+Автоматические проверки (Node.js), из папки website:
   node "tests\test.cjs"
 Проверка также на вашем файле:
   node tests/test.cjs "C:\путь\package.sql"
@@ -55,6 +78,6 @@ index.html — интерфейс
 formatter.js — INI-парсер, токенизатор, форматирование
 app.js — загрузка, копирование, скачивание
 preset.js — встроенная копия исходного INI
-preset_ibeexpert.ini — исходный пресет
+presets/preset_ibeexpert.ini — исходный пресет
 server.cjs — необязательный локальный сервер
 test.cjs — проверки ядра
