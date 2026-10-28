@@ -167,6 +167,66 @@ test('User procedure preserves tokens, header layout, INSERT list, comments and 
   assert.deepEqual(signature(result), signature(sql));
 });
 
+test('Logical spacing separates queries, guards and assignments without splitting every statement', () => {
+  const sql = `create procedure p as
+declare variable saved_istage integer;
+declare variable n integer;
+begin
+select count(*) from t into :n;
+if (n <> 1) then exception e_error 'stage';
+if (n is null) then exception e_error 'quantity';
+saved_istage = null;
+select x from t into :saved_istage;
+if (saved_istage is null) then
+-- attached to the guarded update
+update or insert into t(x) values(1) matching(x);
+update t set x=0;
+update t set x=1;
+success=1;
+message='done';
+suspend;
+end`;
+  const s = clone(); s.General.KeepEmptyLines = 0; s.General.EmptyLinesNumber = 1;
+  const result = fmt(sql, s);
+  for (const pattern of ['into :n;\n\n  if', "'stage';\n\n  if", "'quantity';\n\n  saved_istage", 'saved_istage = null;\n\n  select', 'into :saved_istage;\n\n  if']) assert.ok(result.includes(pattern), pattern);
+  assert.ok(!result.includes('integer;\n\ndeclare'));
+  assert.ok(result.includes('success = 1;\n  message'));
+  assert.ok(result.includes("message = 'done';\n  suspend;\nend"));
+  assert.ok(result.includes('-- attached to the guarded update\n'));
+  assert.ok(!result.includes('-- attached to the guarded update\n\n'));
+  assert.equal(result, fmt(result, s));
+  s.General.EmptyLinesNumber = 0;
+  assert.ok(!fmt(sql, s).includes('\n\n'));
+  s.General.EmptyLinesNumber = 2;
+  const two = fmt(sql, s);
+  assert.ok(two.includes('into :n;\n\n\n  if'));
+  assert.equal(two, fmt(two, s));
+});
+
+test('Logical spacing respects nested BEGIN/END, ELSE and CASE boundaries', () => {
+  const s = clone(); s.General.KeepEmptyLines = 0; s.General.EmptyLinesNumber = 1;
+  const sql = 'begin if (x=1) then begin select a from t into :n; if (n=0) then exception e_error; end else begin x=2; y=3; end select case when n=1 then 2 else 3 end from t into :x; if (x=1) then x=2; end';
+  const result = fmt(sql, s);
+  assert.ok(result.includes('end\n  else\n'));
+  assert.ok(result.includes('x = 2;\n    y = 3;'));
+  assert.ok(result.includes('into :x;\n\n  if'));
+  assert.equal(result, fmt(result, s));
+});
+
+test('Replan procedure gets requested logical gaps and keeps guarded comments attached', () => {
+  const sql = fs.readFileSync(__dirname + '/fixtures/block-source-and-replan-dpi.sql', 'utf8');
+  const result = fmt(sql);
+  assert.ok(result.includes('into :stage_count, :idstage, :istage;\n\n        if'));
+  assert.ok(result.includes("exactly one planning stage';\n\n        if"));
+  assert.ok(result.includes("known TASKITEM quantity';\n\n        saved_istage = null;\n\n        select"));
+  assert.ok(result.includes('into :saved_istage;\n\n        if'));
+  assert.ok(result.includes('-- GET_STAGE_QTY_TARGET recalculates the target from corrected DPI.\n          update'));
+  assert.ok(result.includes("success = 1;\n    message = 'Товар заблокирован. Разница отправлена в планирование';\n    suspend;\n  end"));
+  assert.equal(result, fmt(result));
+  const signature = text => lex(text).map(t => t.kind === 'word' ? t.upper : t.value);
+  assert.deepEqual(signature(result), signature(sql));
+});
+
 if (process.argv[2]) test('Supplied SQL file: token preservation and idempotence', () => {
   const sql = fs.readFileSync(process.argv[2], 'utf8');
   const result = fmt(sql); assert.equal(result, fmt(result));

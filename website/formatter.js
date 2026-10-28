@@ -160,18 +160,46 @@
       if (options.caseMode !== undefined) mode = options.caseMode;
       return mode === 1 ? token.value.toLowerCase() : mode === 2 ? token.value.toUpperCase() : mode === 3 ? token.value[0].toUpperCase() + token.value.slice(1).toLowerCase() : token.value;
     };
+    const spacingScope = () => blocks.findLast(block => block.kind === 'begin');
+    function finishStatement(scope) {
+      if (scope?.currentKind) { scope.lastKind = scope.currentKind; scope.currentKind = null; }
+    }
+    function startStatement(index) {
+      const scope = spacingScope();
+      if (!scope || scope.currentKind) return;
+      let first = index;
+      while (tokens[first]?.kind === 'comment') first++;
+      const token = tokens[first];
+      if (!token || ['BEGIN', 'END', 'ELSE', ';'].includes(token.upper) || token.kind === 'terminator') return;
+      const kind = token.upper === 'IF' ? 'if' : ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(token.upper) ? 'query' :
+        token.value === ':' || ['=', ':='].includes(tokens[first + 1]?.value) ? 'assignment' : 'other';
+      const separate = scope.lastKind && (
+        kind === 'if' && ['if', 'query'].includes(scope.lastKind) ||
+        kind === 'assignment' && ['if', 'query'].includes(scope.lastKind) ||
+        kind === 'query' && ['assignment', 'if'].includes(scope.lastKind));
+      if (blanks && separate) {
+        flush();
+        let existing = 0;
+        for (let k = lines.length - 1; k >= 0 && lines[k] === ''; k--) existing++;
+        for (; existing < blanks; existing++) lines.push('');
+      }
+      scope.currentKind = kind;
+    }
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i], u = t.upper, v = t.value, next = tokens[i + 1], n = next?.upper, p = prev?.upper;
       if (val('General', 'KeepEmptyLines', 1) && prev && /\n[\t \r]*\n/.test(sql.slice(prev.end, t.start))) {
         flush(); if (lines.length && lines[lines.length - 1] !== '') lines.push('');
       }
+      startStatement(i);
       if (t.kind === 'directive') { flush(0); lines.push(t.value); prev = t; continue; }
       if (t.kind === 'comment') {
+        const savedPendingIndent = pendingIndent;
         if (v.startsWith('--')) {
           if (val('General', 'StartSingleLineCommentsFromFirstColumn')) { flush(0); lineIndent = 0; }
           const parameterIndent = frames.at(-1)?.params ? indent + val('InputOutput', 'Indent', 4) : clauseIndent || indent;
           write(v); flush(parameterIndent);
         } else { write(v); if (/[\r\n]/.test(v)) flush(); }
+        pendingIndent = savedPendingIndent;
         prev = t; continue;
       }
       if (t.kind === 'word' && (u === 'PROCEDURE' || u === 'FUNCTION')) {
@@ -197,6 +225,7 @@
           indent = block?.indent ?? Math.max(0, indent - step); pendingIndent = null; flush(indent); write(wordCase(t));
           statement = ''; clause = ''; clauseIndent = indent; routine = false;
           if (n && n !== ';' && n !== '^' && n !== 'ELSE' && n !== ')' && next.kind !== 'terminator') flush(indent);
+          if (n !== 'ELSE') finishStatement(spacingScope());
         }
         prev = t; continue;
       }
@@ -245,7 +274,7 @@
       }
       if (u === ';' || u === '^' || t.kind === 'terminator') {
         write(v, false); flush(indent); pendingIndent = null; statement = ''; clause = ''; clauseIndent = indent; signature = false; condition = false; forLoop = false; declaration = false;
-        if (blanks && tokens[i + 1]?.upper !== 'END') for (let k = 0; k < blanks; k++) lines.push('');
+        finishStatement(spacingScope());
         prev = t; continue;
       }
       if (t.kind === 'word') {

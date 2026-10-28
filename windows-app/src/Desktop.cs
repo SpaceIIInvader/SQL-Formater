@@ -437,7 +437,7 @@ public class MainWindow : Form {
             case "KeywordCharCase": return "Регистр ключевых слов SQL (0–3)";
             case "RightMargin": return "Мягкий предел длины строки (движок: 40–500)";
             case "KeepEmptyLines": return "Сохранять пустые строки (0/1)";
-            case "EmptyLinesNumber": return "Количество пустых строк";
+            case "EmptyLinesNumber": return "Пустые строки между логическими группами (0 — не добавлять)";
             case "SpaceAfterComma": return "Пробел после запятой (0/1)";
             case "NoSpaceAfterCommaInDatatypes": return "Без пробела после запятой в типах (0/1)";
             case "NoSpaceBetweenProcNameAndBracket": return "Без пробела между именем и скобкой (0/1)";
