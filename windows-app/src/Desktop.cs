@@ -230,7 +230,24 @@ public static class SqlComparison {
         return rows;
     }
 }
+public class WorkspaceTabs : TabControl {
+    public WorkspaceTabs() { Appearance = TabAppearance.FlatButtons; ItemSize = new Size(1, 1); SizeMode = TabSizeMode.Fixed; Multiline = true; }
+    public override Rectangle DisplayRectangle { get { return ClientRectangle; } }
+    protected override void OnLayout(LayoutEventArgs e) {
+        base.OnLayout(e);
+        foreach (TabPage page in TabPages) page.Bounds = ClientRectangle;
+    }
+    protected override void WndProc(ref Message message) {
+        if (message.Msg == 0x1328) { message.Result = new IntPtr(1); return; }
+        base.WndProc(ref message);
+    }
+}
 public class MainWindow : Form {
+    readonly ToolTip hints = new ToolTip();
+    readonly List<Button> navigation = new List<Button>();
+    TextBox presetSearch = new TextBox(); ComboBox presetSection = new ComboBox();
+    CheckBox presetSupportedOnly = new CheckBox(); Label presetFilterCount = new Label();
+    Button compareCode = new Button();
     DataGridView presetGrid = new DataGridView();
     Label presetStatus = new Label();
     string presetEditorSource;
@@ -242,7 +259,7 @@ public class MainWindow : Form {
     List<SqlDifference> visibleDifferenceRows = new List<SqlDifference>();
     HashSet<int> expandedDifferenceBlocks = new HashSet<int>();
     CheckBox collapseEqual = new CheckBox();
-    TabControl modes = new TabControl();
+    TabControl modes = new WorkspaceTabs();
     ScrollTextBox codeInput = new ScrollTextBox(), codeOutput = new ScrollTextBox();
     CheckBox syncScroll = new CheckBox();
     bool syncingScroll;
@@ -283,7 +300,7 @@ public class MainWindow : Form {
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Padding = new Padding(0, 4, 0, 0) };
         recursive.Name = "includeSubfolders"; recursive.Text = "Вложенные папки"; recursive.Checked = true; recursive.AutoSize = true; recursive.Margin = new Padding(3, 8, 16, 3);
         charCase.Name = "caseSelection"; charCase.DropDownStyle = ComboBoxStyle.DropDownList; charCase.Width = 170; charCase.Items.AddRange(new object[] { "Регистр из пресета", "Сохранить регистр", "Нижний регистр", "Верхний регистр" }); charCase.SelectedIndex = 0;
-        scan.Text = "Проверить и выровнять"; scan.Width = 200; scan.Height = 34;
+        scan.Text = "Анализировать"; scan.Width = 150; scan.Height = 34;
         save.Text = "Сохранить изменения"; save.Width = 205; save.Height = 34; save.Enabled = false; save.BackColor = Color.FromArgb(200, 234, 180);
         actions.Controls.AddRange(new Control[] { recursive, charCase, scan, save }); layout.Controls.Add(actions, 0, 2);
         compatibility.Dock = DockStyle.Fill; compatibility.Text = "Частичная поддержка INI IBExpert. Точный результат может отличаться от IBExpert."; compatibility.ForeColor = Color.FromArgb(120, 85, 25); layout.Controls.Add(compatibility, 0, 3);
@@ -314,10 +331,11 @@ public class MainWindow : Form {
             if (busy) { e.Cancel = true; summary.Text = "Дождитесь завершения текущей операции."; }
             else { settingsTimer.Stop(); PersistSettings(); }
         };
-        FormClosed += delegate { settingsTimer.Dispose(); };
+        FormClosed += delegate { settingsTimer.Dispose(); hints.Dispose(); };
         InitializeCodeMode(layout, row2);
         InitializeComparisonMode();
         InitializePresetMode();
+        StyleWorkspace(this);
         RestoreSettings();
         try { FillPresetGrid(preset); } catch (Exception e) { presetStatus.Text = "Ошибка пресета: " + e.Message; }
     }
@@ -325,42 +343,71 @@ public class MainWindow : Form {
         Controls.Remove(folderLayout);
         folderLayout.RowStyles[1].Height = 0;
         folderLayout.RowStyles[3].Height = 0;
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12) };
+        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
+        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 194)); shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var sidebar = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(27, 43, 54), Padding = new Padding(12), Margin = Padding.Empty };
+        var brand = new Label { Text = "SQL Atelier", ForeColor = Color.White, Font = new Font("Segoe UI", 17, FontStyle.Bold), Dock = DockStyle.Top, Height = 48, Padding = new Padding(4, 8, 0, 0) };
+        var menu = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(0, 12, 0, 0) };
+        string[] menuText = { "SQL-код\nФорматирование", "Папка SQL\nОбработка файлов", "Сравнение SQL\nРазличия двух версий", "Настройки пресета\nПравила форматирования" };
+        for (int index = 0; index < menuText.Length; index++) {
+            int target = index;
+            var button = new Button { Name = "navigate" + index, Text = menuText[index], Width = 168, Height = 66, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(10, 0, 0, 0), FlatStyle = FlatStyle.Flat, ForeColor = Color.FromArgb(201, 216, 223), BackColor = sidebar.BackColor, Margin = new Padding(0, 0, 0, 8), CausesValidation = false };
+            button.FlatAppearance.BorderSize = 0; button.Click += delegate { modes.SelectedIndex = target; };
+            menu.Controls.Add(button); navigation.Add(button);
+        }
+        sidebar.Controls.Add(menu); sidebar.Controls.Add(brand); shell.Controls.Add(sidebar, 0, 0);
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(12), Margin = Padding.Empty };
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(presetRow, 0, 0);
-        var options = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        options.Controls.Add(charCase);
-        compatibility.AutoSize = true; compatibility.Dock = DockStyle.None; compatibility.Margin = new Padding(12, 6, 0, 0);
-        options.Controls.Add(compatibility); root.Controls.Add(options, 0, 1);
+        presetRow.ColumnStyles[0].Width = 80; presetRow.ColumnStyles[2].Width = 132;
+        var options = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1, Margin = Padding.Empty };
+        options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70)); options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        options.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100)); options.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 154));
+        options.Controls.Add(new Label { Text = "Регистр", AutoSize = true, Anchor = AnchorStyles.Left }, 0, 0);
+        charCase.Dock = DockStyle.Fill; options.Controls.Add(charCase, 1, 0);
+        compatibility.AutoSize = false; compatibility.AutoEllipsis = true; compatibility.Dock = DockStyle.Fill; compatibility.Margin = new Padding(12, 6, 0, 0);
+        compatibility.Text = "Настройки общие для всех разделов";
+        var editPreset = new Button { Text = "Настроить пресет", Dock = DockStyle.Fill, CausesValidation = false };
+        editPreset.Click += delegate { if (!busy) modes.SelectedIndex = 3; }; options.Controls.Add(editPreset, 3, 0);
+        options.Controls.Add(compatibility, 2, 0); root.Controls.Add(options, 0, 1);
         modes.Name = "workModes"; modes.Dock = DockStyle.Fill;
         var codePage = new TabPage("SQL-код");
         var folderPage = new TabPage("Обработка папки");
         modes.TabPages.AddRange(new TabPage[] { codePage, folderPage });
         modes.SelectedIndex = 0;
         folderPage.Controls.Add(folderLayout);
-        root.Controls.Add(modes, 0, 2); Controls.Add(root);
+        root.Controls.Add(modes, 0, 2); shell.Controls.Add(root, 1, 0); Controls.Add(shell);
+        modes.SelectedIndexChanged += delegate { UpdateNavigation(); }; UpdateNavigation();
         var codeLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(8) };
         codeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         codeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
         codeLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         codeLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false };
-        formatCode.Name = "formatCode"; formatCode.Text = "Форматировать · Ctrl+Enter"; formatCode.Width = 250; formatCode.Height = 34; formatCode.BackColor = Color.FromArgb(200, 234, 180);
-        copyCode.Name = "copyCode"; copyCode.Text = "Копировать результат"; copyCode.Width = 200; copyCode.Height = 34; copyCode.Enabled = false;
-        saveCode.Name = "saveCode"; saveCode.Text = "Сохранить результат…"; saveCode.Width = 200; saveCode.Height = 34; saveCode.Enabled = false;
-        toolbar.Controls.AddRange(new Control[] { formatCode, copyCode, saveCode }); codeLayout.Controls.Add(toolbar, 0, 0);
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
+        formatCode.Name = "formatCode"; formatCode.Text = "Форматировать · Ctrl+Enter"; formatCode.Width = 228; formatCode.Height = 34; formatCode.BackColor = Color.FromArgb(200, 234, 180);
+        copyCode.Name = "copyCode"; copyCode.Text = "Копировать"; copyCode.Width = 105; copyCode.Height = 32; copyCode.Enabled = false;
+        saveCode.Name = "saveCode"; saveCode.Text = "Сохранить…"; saveCode.Width = 108; saveCode.Height = 32; saveCode.Enabled = false;
+        compareCode.Name = "compareCode"; compareCode.Text = "Сравнить с исходником"; compareCode.Width = 204; compareCode.Height = 34; compareCode.Enabled = false;
+        compareCode.Click += async delegate { compareLeft.Text = codeInput.Text; compareRight.Text = codeOutput.Text; modes.SelectedIndex = 2; await CompareSql(false); };
+        toolbar.Controls.AddRange(new Control[] { formatCode, compareCode }); codeLayout.Controls.Add(toolbar, 0, 0);
         syncScroll.Name = "syncScroll"; syncScroll.Text = "Синхронная прокрутка"; syncScroll.AutoSize = true;
         codeLayout.Controls.Add(syncScroll, 0, 1);
         codeInput.ScrollPositionChanged += delegate { SyncEditors(codeInput, codeOutput); };
         codeOutput.ScrollPositionChanged += delegate { SyncEditors(codeOutput, codeInput); };
         syncScroll.CheckedChanged += delegate { if (syncScroll.Checked) SyncEditors(codeInput, codeOutput); };
-        var editors = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
-        editors.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); editors.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        editors.RowStyles.Add(new RowStyle(SizeType.Absolute, 30)); editors.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        editors.Controls.Add(new Label { Text = "Исходный SQL · вставьте код через Ctrl+V", AutoSize = true }, 0, 0);
-        editors.Controls.Add(new Label { Text = "После форматирования", AutoSize = true }, 1, 0);
+        var editors = new SplitContainer { Name = "codeEditors", Dock = DockStyle.Fill, Size = new Size(900, 500), SplitterDistance = 450, Panel1MinSize = 260, Panel2MinSize = 260, SplitterWidth = 7 };
+        var sourceActions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 70, WrapContents = true };
+        sourceActions.Controls.Add(new Label { Text = "Исходный SQL", AutoSize = true, Margin = new Padding(0, 8, 12, 0) });
+        var paste = new Button { Name = "pasteCode", Text = "Вставить", AutoSize = true, Height = 32 };
+        paste.Click += delegate { try { if (Clipboard.ContainsText()) codeInput.SelectedText = Clipboard.GetText(); codeInput.Focus(); } catch (Exception e) { codeStatus.Text = "Буфер обмена: " + e.Message; } };
+        var open = new Button { Name = "openCode", Text = "Открыть…", AutoSize = true, Height = 32 };
+        open.Click += delegate { OpenCodeFile(); };
+        sourceActions.Controls.AddRange(new Control[] { open, paste });
+        var resultActions = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 70, WrapContents = true };
+        resultActions.Controls.Add(new Label { Text = "Результат", AutoSize = true, Margin = new Padding(0, 8, 12, 0) });
+        resultActions.Controls.AddRange(new Control[] { copyCode, saveCode });
         codeInput.Name = "codeInput"; codeOutput.Name = "codeOutput";
         foreach (var box in new TextBox[] { codeInput, codeOutput }) {
             box.Dock = DockStyle.Fill; box.Multiline = true; box.WordWrap = false; box.ScrollBars = ScrollBars.Both;
@@ -368,7 +415,8 @@ public class MainWindow : Form {
             box.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.A) { ((TextBox)sender).SelectAll(); e.SuppressKeyPress = true; } };
         }
         codeOutput.ReadOnly = true;
-        editors.Controls.Add(codeInput, 0, 1); editors.Controls.Add(codeOutput, 1, 1); codeLayout.Controls.Add(editors, 0, 2);
+        editors.Panel1.Controls.Add(codeInput); editors.Panel1.Controls.Add(sourceActions);
+        editors.Panel2.Controls.Add(codeOutput); editors.Panel2.Controls.Add(resultActions); codeLayout.Controls.Add(editors, 0, 2);
         codeStatus.Name = "codeStatus"; codeStatus.Dock = DockStyle.Fill; codeStatus.Padding = new Padding(0, 8, 0, 0);
         codeStatus.Text = "Вставьте SQL слева и нажмите «Форматировать» или Ctrl+Enter.";
         codeLayout.Controls.Add(codeStatus, 0, 3); codePage.Controls.Add(codeLayout);
@@ -385,11 +433,61 @@ public class MainWindow : Form {
         };
         Shown += delegate { codeInput.Focus(); };
     }
+    void UpdateNavigation() {
+        for (int index = 0; index < navigation.Count; index++) {
+            bool selected = modes.SelectedIndex == index;
+            navigation[index].BackColor = selected ? Color.FromArgb(52, 79, 92) : Color.FromArgb(27, 43, 54);
+            navigation[index].ForeColor = selected ? Color.White : Color.FromArgb(201, 216, 223);
+            navigation[index].AccessibleDescription = selected ? "Текущий раздел" : "Открыть раздел";
+        }
+    }
+    void StyleWorkspace(Control parent) {
+        foreach (Control control in parent.Controls) {
+            var button = control as Button;
+            if (button != null && !navigation.Contains(button)) {
+                bool primary = button == formatCode || button == save || button.Name == "applyPreset" || button.BackColor == Color.FromArgb(200, 234, 180);
+                button.FlatStyle = FlatStyle.Flat; button.FlatAppearance.BorderSize = 1;
+                button.FlatAppearance.BorderColor = primary ? Color.FromArgb(168, 200, 155) : Color.FromArgb(206, 216, 221);
+                button.BackColor = primary ? Color.FromArgb(211, 235, 197) : Color.White;
+                button.ForeColor = Color.FromArgb(29, 51, 62); button.Cursor = Cursors.Hand;
+                button.Font = new Font("Segoe UI", 9);
+            }
+            var grid = control as DataGridView;
+            if (grid != null) {
+                grid.EnableHeadersVisualStyles = false; grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 241, 244);
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(38, 61, 73); grid.ColumnHeadersHeight = 36;
+                grid.GridColor = Color.FromArgb(224, 231, 235); grid.BorderStyle = BorderStyle.None;
+                grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(195, 221, 237); grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(20, 43, 58);
+            }
+            StyleWorkspace(control);
+        }
+        hints.SetToolTip(compareCode, "Открыть сравнение исходного SQL с результатом форматирования");
+        hints.SetToolTip(presetPath, "Активный пресет. Настройки общие для всех разделов.");
+    }
+    void OpenCodeFile() {
+        using (var dialog = new OpenFileDialog { Filter = "SQL-файлы (*.sql;*.txt)|*.sql;*.txt|Все файлы (*.*)|*.*" }) {
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            try {
+                codeInput.Text = ReadCodeFile(dialog.FileName);
+                codeStatus.Text = "Открыт: " + Path.GetFileName(dialog.FileName) + ". Нажмите «Форматировать».";
+                codeInput.Focus();
+            } catch (Exception e) { codeStatus.Text = "Не удалось открыть файл: " + e.Message; }
+        }
+    }
+    internal static string ReadCodeFile(string file) {
+        if (new FileInfo(file).Length > 8000000) throw new Exception("Файл больше 8 МБ.");
+        string text;
+        try { using (var reader = new StreamReader(file, new UTF8Encoding(false, true), true)) text = reader.ReadToEnd(); }
+        catch (DecoderFallbackException) { text = File.ReadAllText(file, Encoding.GetEncoding(1251)); }
+        if (text.Length > 2000000) throw new Exception("Максимум — 2 млн символов. Выберите меньший фрагмент.");
+        return WindowsLines(text);
+    }
     void InitializePresetMode() {
         var page = new TabPage("Настройки пресета"); modes.TabPages.Add(page);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(8) };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(8) };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54)); page.Controls.Add(layout);
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
@@ -398,7 +496,7 @@ public class MainWindow : Form {
         var undo = new Button { Text = "Отменить правки", AutoSize = true, Height = 34, CausesValidation = false };
         var reset = new Button { Text = "Встроенный пресет", AutoSize = true, Height = 34, CausesValidation = false };
         toolbar.Controls.AddRange(new Control[] { apply, export, undo, reset }); layout.Controls.Add(toolbar, 0, 0);
-        layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Измените столбец «Значение» и нажмите «Применить настройки». Изменения действуют во всех режимах.\r\n0 — нет, 1 — да; регистр: 0 — сохранить, 1 — нижний, 2 — верхний, 3 — с заглавной. Для него сверху выберите «Регистр из пресета»." }, 0, 1);
+        layout.Controls.Add(new Label { Dock = DockStyle.Fill, Text = "Измените значение и нажмите «Применить настройки». Настройки общие для всех разделов.\r\n0/1 — нет/да. Регистр: 0 — сохранить, 1 — нижний, 2 — верхний, 3 — с заглавной." }, 0, 1);
         presetGrid.Name = "presetGrid"; presetGrid.Dock = DockStyle.Fill; presetGrid.RowHeadersVisible = false;
         presetGrid.AllowUserToAddRows = presetGrid.AllowUserToDeleteRows = false; presetGrid.AutoGenerateColumns = false;
         presetGrid.BackgroundColor = Color.White; presetGrid.SelectionMode = DataGridViewSelectionMode.CellSelect;
@@ -418,8 +516,20 @@ public class MainWindow : Form {
             } else presetGrid.Rows[e.RowIndex].ErrorText = "";
         };
         presetGrid.CellValueChanged += delegate { if (!fillingPresetGrid) presetStatus.Text = "Есть неприменённые правки. Нажмите «Применить настройки»."; };
-        layout.Controls.Add(presetGrid, 0, 2);
-        presetStatus.Name = "presetStatus"; presetStatus.Dock = DockStyle.Fill; layout.Controls.Add(presetStatus, 0, 3);
+        var filters = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = true, AutoScroll = true };
+        filters.Controls.Add(new Label { Text = "Поиск", AutoSize = true, Margin = new Padding(0, 7, 8, 0) });
+        presetSearch.Name = "presetSearch"; presetSearch.Width = 200;
+        presetSection.Name = "presetSection"; presetSection.DropDownStyle = ComboBoxStyle.DropDownList; presetSection.Width = 160;
+        presetSection.Items.Add("Все секции"); presetSection.SelectedIndex = 0;
+        presetSupportedOnly.Name = "presetSupportedOnly"; presetSupportedOnly.Text = "Только поддерживаемые"; presetSupportedOnly.AutoSize = true;
+        presetFilterCount.AutoSize = true; presetFilterCount.Margin = new Padding(8, 7, 0, 0);
+        filters.Controls.AddRange(new Control[] { presetSearch, presetSection, presetSupportedOnly, presetFilterCount });
+        layout.Controls.Add(filters, 0, 2);
+        presetSearch.TextChanged += delegate { FilterPresetRows(); }; presetSection.SelectedIndexChanged += delegate { FilterPresetRows(); };
+        presetSupportedOnly.CheckedChanged += delegate { FilterPresetRows(); };
+        presetGrid.Columns[0].Width = 105; presetGrid.Columns[1].Width = 208; presetGrid.Columns[2].Width = 75; presetGrid.Columns[4].Width = 132;
+        layout.Controls.Add(presetGrid, 0, 3);
+        presetStatus.Name = "presetStatus"; presetStatus.Dock = DockStyle.Fill; layout.Controls.Add(presetStatus, 0, 4);
         apply.Click += delegate { ApplyPresetChanges(); };
         undo.Click += delegate { presetGrid.CancelEdit(); FillPresetGrid(preset); };
         reset.Click += delegate { try { SelectPreset(Engine.Preset, ""); } catch (Exception e) { presetStatus.Text = "Ошибка: " + e.Message; } };
@@ -437,7 +547,7 @@ public class MainWindow : Form {
             case "KeywordCharCase": return "Регистр ключевых слов SQL (0–3)";
             case "RightMargin": return "Мягкий предел длины строки (движок: 40–500)";
             case "KeepEmptyLines": return "Сохранять пустые строки (0/1)";
-            case "EmptyLinesNumber": return "Пустые строки между логическими группами (0 — не добавлять)";
+            case "EmptyLinesNumber": return "Пустые строки между операторами тела (кроме серии присваиваний и DECLARE)";
             case "SpaceAfterComma": return "Пробел после запятой (0/1)";
             case "NoSpaceAfterCommaInDatatypes": return "Без пробела после запятой в типах (0/1)";
             case "NoSpaceBetweenProcNameAndBracket": return "Без пробела между именем и скобкой (0/1)";
@@ -460,6 +570,10 @@ public class MainWindow : Form {
         try {
             presetGrid.CancelEdit(); presetGrid.Rows.Clear();
             var ignored = new HashSet<string>(metadata.unsupported);
+            string previousSection = Convert.ToString(presetSection.SelectedItem);
+            presetSection.Items.Clear(); presetSection.Items.Add("Все секции");
+            foreach (var section in metadata.settings.Keys) presetSection.Items.Add(section);
+            presetSection.SelectedIndex = presetSection.Items.Contains(previousSection) ? presetSection.Items.IndexOf(previousSection) : 0;
             foreach (var section in metadata.settings) foreach (var entry in section.Value) {
                 bool supported = !ignored.Contains("[" + section.Key + "] " + entry.Key);
                 int row = presetGrid.Rows.Add(section.Key, entry.Key, entry.Value, DescribePresetOption(entry.Key), supported ? "Поддерживается" : "Не применяется");
@@ -468,6 +582,20 @@ public class MainWindow : Form {
             presetEditorSource = text;
             presetStatus.Text = "Параметров: " + presetGrid.Rows.Count + ". Не применяются движком: " + metadata.unsupported.Count + ". " + String.Join(" · ", metadata.warnings);
         } finally { fillingPresetGrid = false; }
+        FilterPresetRows();
+    }
+    internal void FilterPresetRows() {
+        if (fillingPresetGrid || !presetGrid.EndEdit()) return;
+        string query = presetSearch.Text.Trim(), section = Convert.ToString(presetSection.SelectedItem);
+        presetGrid.CurrentCell = null; int visible = 0;
+        foreach (DataGridViewRow row in presetGrid.Rows) {
+            string haystack = Convert.ToString(row.Cells[0].Value) + " " + row.Cells[1].Value + " " + row.Cells[3].Value;
+            bool show = (presetSection.SelectedIndex <= 0 || Convert.ToString(row.Cells[0].Value) == section) &&
+                (!presetSupportedOnly.Checked || Convert.ToString(row.Cells[4].Value) == "Поддерживается") &&
+                (query.Length == 0 || haystack.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0);
+            row.Visible = show; if (show) visible++;
+        }
+        presetFilterCount.Text = visible + " / " + presetGrid.Rows.Count;
     }
     internal void SelectPreset(string text, string file) {
         var metadata = Engine.Call(new { operation = "preset", presetText = text });
@@ -522,15 +650,18 @@ public class MainWindow : Form {
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46)); page.Controls.Add(layout);
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true };
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoScroll = true, WrapContents = false };
+        var compareToolbar = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
+        compareToolbar.RowStyles.Add(new RowStyle(SizeType.Absolute, 40)); compareToolbar.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
         var compare = new Button { Text = "Сравнить · Ctrl+Enter", AutoSize = true, Height = 34 };
         var format = new Button { Text = "Выровнять и сравнить", AutoSize = true, Height = 34, BackColor = Color.FromArgb(200, 234, 180) };
         var previous = new Button { Text = "↑ Различие", AutoSize = true, Height = 34 };
         var next = new Button { Text = "↓ Различие", AutoSize = true, Height = 34 };
-        toolbar.Controls.AddRange(new Control[] { compare, format, previous, next }); layout.Controls.Add(toolbar, 0, 0);
+        toolbar.Controls.AddRange(new Control[] { compare, format, previous, next }); compareToolbar.Controls.Add(toolbar, 0, 0); layout.Controls.Add(compareToolbar, 0, 0);
         collapseEqual.Name = "collapseEqual"; collapseEqual.Text = "Скрывать совпадающие строки"; collapseEqual.Checked = true; collapseEqual.AutoSize = true;
         var collapseAll = new Button { Name = "collapseAll", Text = "Свернуть все совпадения", AutoSize = true, Height = 34 };
-        toolbar.Controls.Add(collapseEqual); toolbar.Controls.Add(collapseAll);
+        var viewOptions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, AutoScroll = true };
+        viewOptions.Controls.Add(collapseEqual); viewOptions.Controls.Add(collapseAll); compareToolbar.Controls.Add(viewOptions, 0, 1);
         collapseEqual.CheckedChanged += delegate { RefreshDifferenceRows(); };
         collapseAll.Click += delegate { expandedDifferenceBlocks.Clear(); collapseEqual.Checked = true; RefreshDifferenceRows(); };
         var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, Size = new Size(1000, 500), SplitterDistance = 220, Panel1MinSize = 80, Panel2MinSize = 80 };
@@ -646,7 +777,7 @@ public class MainWindow : Form {
         } finally { syncingScroll = false; }
     }
     void InvalidateCode() {
-        codeOutput.Clear(); copyCode.Enabled = saveCode.Enabled = false;
+        codeOutput.Clear(); copyCode.Enabled = saveCode.Enabled = compareCode.Enabled = false;
         codeStatus.Text = "Нажмите «Форматировать» или Ctrl+Enter для получения результата.";
     }
     internal async Task FormatCode() {
@@ -710,7 +841,7 @@ public class MainWindow : Form {
     }
     static string WindowsLines(string text) { return text.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n"); }
     void InvalidatePlan() { if (busy || restoringSettings) return; plan = null; save.Enabled = false; files.Items.Clear(); original.Clear(); formatted.Clear(); QueueSettings(); }
-    void Busy(bool value) { busy = value; chooseFolder.Enabled = choosePreset.Enabled = scan.Enabled = folder.Enabled = recursive.Enabled = charCase.Enabled = !value; modes.Enabled = formatCode.Enabled = codeInput.Enabled = !value; copyCode.Enabled = saveCode.Enabled = !value && codeOutput.TextLength > 0; save.Enabled = !value && plan != null && plan.rows.Exists(r => r.status == "changed"); progress.Style = value ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks; }
+    void Busy(bool value) { busy = value; foreach (var button in navigation) button.Enabled = !value; chooseFolder.Enabled = choosePreset.Enabled = scan.Enabled = folder.Enabled = recursive.Enabled = charCase.Enabled = !value; modes.Enabled = formatCode.Enabled = codeInput.Enabled = !value; copyCode.Enabled = saveCode.Enabled = compareCode.Enabled = !value && codeOutput.TextLength > 0; save.Enabled = !value && plan != null && plan.rows.Exists(r => r.status == "changed"); progress.Style = value ? ProgressBarStyle.Marquee : ProgressBarStyle.Blocks; }
     void ShowError(Exception e) { summary.Text = "Ошибка: " + e.Message; MessageBox.Show(this, e.Message, "SQL Atelier", MessageBoxButtons.OK, MessageBoxIcon.Error); }
     void Display() {
         files.BeginUpdate(); files.Items.Clear();
@@ -770,6 +901,7 @@ public static class Program {
     static void SelfTest(string report) {
         string root = Path.Combine(Path.GetTempPath(), "SQLAtelier-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
         string settingsPath = Path.Combine(root, "SQLAtelier.settings.json");
+        CheckWorkspaceUi(root);
         CheckPresetSettings(root);
         using (var window = new MainWindow(settingsPath)) {
             window.CreateControl(); window.PerformLayout(); if (window.Controls.Count == 0) throw new Exception("Window layout initialization failed");
@@ -856,6 +988,48 @@ public static class Program {
         var second = Engine.Call(new { operation = "analyze", folder = root, presetText = Engine.Preset, recursive = true });
         if (second.rows.Count != 1 || second.rows[0].status != "unchanged") throw new Exception("Idempotence failed");
         File.WriteAllText(report, "PASS: optional vertical and horizontal bidirectional proportional scrolling, enable/disable, different text lengths, short text, scroll preserves text; default code tab, pasted SQL formatting, original text preservation, Unicode, CRLF, case override, stale result invalidation, invalid and empty SQL, window initialization, automatic settings save, settings roundtrip across restart, cached preset, corrupt settings preservation/recovery, embedded runtime, INI, analyze, save, exact backup, backup exclusion, idempotence.\r\nTest folder: " + root, Encoding.UTF8);
+    }
+    static void LayoutTree(Control control) {
+        control.PerformLayout();
+        foreach (Control child in control.Controls) LayoutTree(child);
+    }
+    static void CheckWorkspaceUi(string root) {
+        using (var window = new MainWindow(Path.Combine(root, "ui-test.settings.json"))) {
+            window.CreateControl();
+            var tabs = (TabControl)window.Controls.Find("workModes", true)[0];
+            var split = (SplitContainer)window.Controls.Find("codeEditors", true)[0];
+            foreach (int width in new int[] { 880, 1040, 1200, 1600 }) {
+                window.Size = new Size(width, 800);
+                for (int pass = 0; pass < 3; pass++) LayoutTree(window);
+                if (split.Panel1.Width < 260 || split.Panel2.Width < 260 || split.Height < 180) throw new Exception("Editor panes are clipped at width " + width + ": " + split.Size + ", left=" + split.Panel1.Width + ", right=" + split.Panel2.Width + ", page=" + tabs.SelectedTab.Size + ", window=" + window.ClientSize);
+                foreach (string name in new string[] { "formatCode", "compareCode", "copyCode", "saveCode", "openCode", "pasteCode" }) {
+                    var control = window.Controls.Find(name, true)[0];
+                    if (control.Left < 0 || control.Top < 0 || control.Right > control.Parent.ClientSize.Width || control.Bottom > control.Parent.ClientSize.Height) throw new Exception("Action clipped: " + name + " at width " + width);
+                }
+            }
+            tabs.SelectedIndex = 3;
+            if (window.Controls.Find("navigate3", true)[0].BackColor == window.Controls.Find("navigate0", true)[0].BackColor) throw new Exception("Navigation selection is not indicated");
+            var search = (TextBox)window.Controls.Find("presetSearch", true)[0];
+            var section = (ComboBox)window.Controls.Find("presetSection", true)[0];
+            var grid = (DataGridView)window.Controls.Find("presetGrid", true)[0];
+            section.SelectedItem = "General"; search.Text = "BlockIndent";
+            int visible = 0;
+            foreach (DataGridViewRow row in grid.Rows) if (row.Visible) visible++;
+            if (visible != 1) throw new Exception("Preset search and section filter failed");
+            PresetRow(window, "General", "BlockIndent").Cells[2].Value = 6;
+            search.Text = "not-a-preset-option";
+            if (!window.ApplyPresetChanges() || Convert.ToInt32(PresetRow(window, "General", "BlockIndent").Cells[2].Value) != 6) throw new Exception("Filtering discarded edited settings");
+            search.Clear(); section.SelectedIndex = 0;
+            window.SelectPreset(Engine.Preset + "\n[Future]\nUnknown=7\n", "");
+            ((CheckBox)window.Controls.Find("presetSupportedOnly", true)[0]).Checked = true;
+            if (PresetRow(window, "Future", "Unknown").Visible) throw new Exception("Unsupported preset filter failed");
+        }
+        string utf8 = Path.Combine(root, "editor-utf8.sql"), cp1251 = Path.Combine(root, "editor-cp1251.sql"), utf16 = Path.Combine(root, "editor-utf16.sql");
+        const string text = "select 'Русский текст';\n";
+        File.WriteAllText(utf8, text, new UTF8Encoding(false)); File.WriteAllText(cp1251, text, Encoding.GetEncoding(1251)); File.WriteAllText(utf16, text, Encoding.Unicode);
+        foreach (string file in new string[] { utf8, cp1251, utf16 }) if (MainWindow.ReadCodeFile(file) != text.Replace("\n", "\r\n")) throw new Exception("Editor file encoding failed: " + file);
+        // Keep the UI test SQL inputs separate from the folder-processing fixture.
+        File.Delete(utf8); File.Delete(cp1251); File.Delete(utf16);
     }
     static DataGridViewRow PresetRow(MainWindow window, string section, string key) {
         var grid = (DataGridView)window.Controls.Find("presetGrid", true)[0];

@@ -1,4 +1,5 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param([switch]$BuildOnly)
+$ErrorActionPreference = 'Stop'
 $desktopRoot = Split-Path -Parent $PSScriptRoot
 $kernelFolder = Join-Path $desktopRoot 'src'
 $desktopSource = Join-Path $kernelFolder 'Desktop.cs'
@@ -30,5 +31,9 @@ $compilerArgs = @(
 )
 & 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe' @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw 'C# compilation failed' }
-Copy-Item -LiteralPath $builtExe -Destination $applicationExe -Force -ErrorAction Stop
-Get-Item -LiteralPath $applicationExe | Format-List FullName,Length
+if ($BuildOnly) {
+  Get-Item -LiteralPath $builtExe | Format-List FullName,Length
+} else {
+  Copy-Item -LiteralPath $builtExe -Destination $applicationExe -Force -ErrorAction Stop
+  Get-Item -LiteralPath $applicationExe | Format-List FullName,Length
+}

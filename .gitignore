@@ -7,6 +7,8 @@ windows-app/SQLAtelier.settings.json.*
 windows-app/build/node.gz
 windows-app/build/BuildInfo.cs
 windows-app/build/SQLAtelier.build.exe
+windows-app/build/SQLAtelier.settings.json
+windows-app/build/SQLAtelier.settings.json.*
 node_modules/
 *.tmp
 Thumbs.db

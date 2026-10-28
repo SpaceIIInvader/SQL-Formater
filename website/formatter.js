@@ -160,23 +160,25 @@
       if (options.caseMode !== undefined) mode = options.caseMode;
       return mode === 1 ? token.value.toLowerCase() : mode === 2 ? token.value.toUpperCase() : mode === 3 ? token.value[0].toUpperCase() + token.value.slice(1).toLowerCase() : token.value;
     };
-    const spacingScope = () => blocks.findLast(block => block.kind === 'begin');
-    function finishStatement(scope) {
-      if (scope?.currentKind) { scope.lastKind = scope.currentKind; scope.currentKind = null; }
+    const rootSpacingScope = {};
+    const spacingScope = () => blocks.findLast(block => block.kind === 'begin') || rootSpacingScope;
+    function finishStatement() {
+      const scope = spacingScope();
+      if (scope.currentKind) { scope.lastKind = scope.currentKind; scope.currentKind = null; }
     }
     function startStatement(index) {
       const scope = spacingScope();
-      if (!scope || scope.currentKind) return;
+      if (scope.currentKind) return;
       let first = index;
       while (tokens[first]?.kind === 'comment') first++;
       const token = tokens[first];
       if (!token || ['BEGIN', 'END', 'ELSE', ';'].includes(token.upper) || token.kind === 'terminator') return;
-      const kind = token.upper === 'IF' ? 'if' : ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE'].includes(token.upper) ? 'query' :
+      const kind = token.upper === 'IF' ? 'if' : ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'MERGE', 'EXECUTE'].includes(token.upper) ? 'query' :
         token.value === ':' || ['=', ':='].includes(tokens[first + 1]?.value) ? 'assignment' : 'other';
       const separate = scope.lastKind && (
         kind === 'if' && ['if', 'query'].includes(scope.lastKind) ||
         kind === 'assignment' && ['if', 'query'].includes(scope.lastKind) ||
-        kind === 'query' && ['assignment', 'if'].includes(scope.lastKind));
+        kind === 'query' && ['assignment', 'if', 'query'].includes(scope.lastKind));
       if (blanks && separate) {
         flush();
         let existing = 0;
@@ -185,10 +187,30 @@
       }
       scope.currentKind = kind;
     }
+    function previousCode(index) {
+      do { index--; } while (index >= 0 && tokens[index].kind === 'comment');
+      return index;
+    }
+    function distinctFrom(index) {
+      let previous = previousCode(index);
+      if (tokens[previous]?.upper !== 'DISTINCT') return false;
+      previous = previousCode(previous);
+      if (tokens[previous]?.upper === 'NOT') previous = previousCode(previous);
+      return tokens[previous]?.upper === 'IS';
+    }
+    let pendingBlank = false;
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i], u = t.upper, v = t.value, next = tokens[i + 1], n = next?.upper, p = prev?.upper;
       if (val('General', 'KeepEmptyLines', 1) && prev && /\n[\t \r]*\n/.test(sql.slice(prev.end, t.start))) {
         flush(); if (lines.length && lines[lines.length - 1] !== '') lines.push('');
+      }
+      if (pendingBlank) {
+        // A comment on the terminator's line belongs to the completed statement.
+        if (t.kind === 'comment' && prev && !/[\r\n]/.test(sql.slice(prev.end, t.start))) {
+          lines[lines.length - 1] += ' ' + v;
+          prev = t; continue;
+        }
+        pendingBlank = false;
       }
       startStatement(i);
       if (t.kind === 'directive') { flush(0); lines.push(t.value); prev = t; continue; }
@@ -225,7 +247,7 @@
           indent = block?.indent ?? Math.max(0, indent - step); pendingIndent = null; flush(indent); write(wordCase(t));
           statement = ''; clause = ''; clauseIndent = indent; routine = false;
           if (n && n !== ';' && n !== '^' && n !== 'ELSE' && n !== ')' && next.kind !== 'terminator') flush(indent);
-          if (n !== 'ELSE') finishStatement(spacingScope());
+          if (n !== 'ELSE') finishStatement();
         }
         prev = t; continue;
       }
@@ -235,7 +257,7 @@
         const listKind = p === 'VALUES' ? 'values' : p === 'MATCHING' ? 'matching' : statement === 'Insert' && clause === 'INTO' && frames.length === 0 ? 'insert' : '';
         const frame = { clause, statement, clauseIndent, statementBase, indent, query, params, depth, listKind, type: /^(NUMERIC|DECIMAL|VARCHAR|CHAR|FLOAT|DOUBLE)$/.test(p || '') };
         frames.push(frame); depth++;
-        const functionCall = prev?.kind === 'word' && !['IF', 'WHILE', 'FOR', 'SELECT', 'IN', 'VALUES', 'RETURNS', 'AS', 'ON', 'AND', 'OR', 'NOT'].includes(p);
+        const functionCall = prev?.kind === 'word' && !['IF', 'WHILE', 'FOR', 'SELECT', 'IN', 'VALUES', 'MATCHING', 'RETURNS', 'AS', 'ON', 'AND', 'OR', 'NOT'].includes(p);
         write('(', /\($/.test(line) ? false : params || listKind === 'insert' ? true : functionCall ? !val('General', 'NoSpaceBetweenProcNameAndBracket', 1) : true);
         if (listKind === 'insert' && val('Insert', 'CRLFBeforeListOfInsertedColumns', 1)) flush(statementBase + val('Insert', 'ColumnValueIndent', 4));
         if (params) { flush(indent + val('InputOutput', 'Indent', 4)); }
@@ -274,7 +296,8 @@
       }
       if (u === ';' || u === '^' || t.kind === 'terminator') {
         write(v, false); flush(indent); pendingIndent = null; statement = ''; clause = ''; clauseIndent = indent; signature = false; condition = false; forLoop = false; declaration = false;
-        finishStatement(spacingScope());
+        pendingBlank = true;
+        finishStatement();
         prev = t; continue;
       }
       if (t.kind === 'word') {
@@ -301,6 +324,11 @@
           prev = t; continue;
         }
         if (!inExpression) {
+          if (u === 'UPDATE' && n === 'OR' && tokens[i + 2]?.upper === 'INSERT') {
+            statement = 'Insert'; clause = ''; statementBase = pendingIndent ?? indent;
+            write([t, next, tokens[i + 2]].map(wordCase).join(' '));
+            i += 2; prev = tokens[i]; continue;
+          }
           if (u === 'SELECT') {
             const previousStatement = statement;
             statement = 'Select'; clause = 'SELECT';
@@ -325,7 +353,7 @@
           if ((u === 'ORDER' || u === 'GROUP') && n === 'BY') { c = u + '_BY'; consumed = true; }
           let joinPrefix = false;
           if (['LEFT', 'RIGHT', 'INNER', 'OUTER', 'FULL', 'CROSS', 'NATURAL'].includes(u) && (n === 'JOIN' || n === 'OUTER')) { c = 'JOIN'; joinPrefix = true; }
-          const isClause = clauses.includes(c) && c !== 'SELECT' && !(c === 'SET' && !statement) && !(u === 'JOIN' && /^(LEFT|RIGHT|INNER|OUTER|FULL|CROSS|NATURAL)$/.test(p || ''));
+          const isClause = clauses.includes(c) && c !== 'SELECT' && !(c === 'FROM' && distinctFrom(i)) && !(c === 'SET' && !statement) && !(u === 'JOIN' && /^(LEFT|RIGHT|INNER|OUTER|FULL|CROSS|NATURAL)$/.test(p || ''));
           if (isClause && statement) {
             const sec = statement;
             const initialInsertInto = sec === 'Insert' && c === 'INTO' && !clause;

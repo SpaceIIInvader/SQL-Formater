@@ -159,7 +159,7 @@ test('CASE expression indentation follows the preset', () => {
 test('User procedure preserves tokens, header layout, INSERT list, comments and stable formatting', () => {
   const sql = fs.readFileSync(__dirname + '/fixtures/set-item-good.sql', 'utf8');
   const result = fmt(sql);
-  assert.equal(result.split('  begin\n')[0], sql.split('  begin\n')[0]);
+  assert.equal(result.split('  begin\n')[0].replace(/\n\n+/g, '\n'), sql.split('  begin\n')[0]);
   assert.ok(result.includes('      insert into taskitem_datamatrix (\n          idtaskitem,'));
   assert.ok(result.includes('if ((:id_dpi is null) or (:id_dpi = 0)) then'));
   assert.equal(result, fmt(result));
@@ -167,7 +167,7 @@ test('User procedure preserves tokens, header layout, INSERT list, comments and 
   assert.deepEqual(signature(result), signature(sql));
 });
 
-test('Logical spacing separates queries, guards and assignments without splitting every statement', () => {
+test('Body spacing separates operations while retaining declaration and assignment groups', () => {
   const sql = `create procedure p as
 declare variable saved_istage integer;
 declare variable n integer;
@@ -203,7 +203,39 @@ end`;
   assert.equal(two, fmt(two, s));
 });
 
-test('Logical spacing respects nested BEGIN/END, ELSE and CASE boundaries', () => {
+test('Consecutive UPDATE statements have a configurable blank line inside and outside procedures', () => {
+  const sql = 'update taskitem set bplaneallow = 0 where id = :idtaskitem;\nupdate taskitem set bplaneallow = 1 where id = :idtaskitem;';
+  const s = clone(); s.General.KeepEmptyLines = 0;
+  for (const wrap of [text => text, text => 'begin\n' + text + '\nend']) {
+    for (const count of [0, 1, 2]) {
+      s.General.EmptyLinesNumber = count;
+      const result = fmt(wrap(sql), s);
+      assert.ok(result.includes('where id = :idtaskitem;' + '\n'.repeat(count + 1) + (wrap(sql).startsWith('begin') ? '  ' : '') + 'update'));
+      assert.equal(result, fmt(result, s));
+      const signature = text => lex(text).map(t => t.kind === 'word' ? t.upper : t.value);
+      assert.deepEqual(signature(result), signature(wrap(sql)));
+    }
+  }
+  s.General.EmptyLinesNumber = 1; s.General.KeepEmptyLines = 1;
+  const withComment = fmt(sql.replace(';\n', ';\n-- second update\n'), s);
+  assert.ok(withComment.includes(';\n\n-- second update\nupdate'));
+  assert.equal(withComment, fmt(withComment, s));
+});
+
+test('Trailing comments stay with their statements and literal semicolons are preserved', () => {
+  const sql = "begin x='a;b'; -- trailing ; comment\ny=2; /* trailing ; block */ execute procedure p; execute procedure q; suspend; end";
+  const s = clone(); s.General.KeepEmptyLines = 0;
+  for (const count of [0, 1, 2]) {
+    s.General.EmptyLinesNumber = count;
+    const result = fmt(sql, s), gap = '\n'.repeat(count + 1);
+    assert.ok(result.includes("x = 'a;b'; -- trailing ; comment\n  y = 2; /* trailing ; block */" + gap + '  execute procedure p;' + gap + '  execute procedure q;\n  suspend;\nend'));
+    assert.equal(result, fmt(result, s));
+    const signature = text => lex(text).map(t => t.kind === 'word' ? t.upper : t.value);
+    assert.deepEqual(signature(result), signature(sql));
+  }
+});
+
+test('Statement spacing respects nested BEGIN/END, ELSE and CASE boundaries', () => {
   const s = clone(); s.General.KeepEmptyLines = 0; s.General.EmptyLinesNumber = 1;
   const sql = 'begin if (x=1) then begin select a from t into :n; if (n=0) then exception e_error; end else begin x=2; y=3; end select case when n=1 then 2 else 3 end from t into :x; if (x=1) then x=2; end';
   const result = fmt(sql, s);
@@ -222,9 +254,30 @@ test('Replan procedure gets requested logical gaps and keeps guarded comments at
   assert.ok(result.includes('into :saved_istage;\n\n        if'));
   assert.ok(result.includes('-- GET_STAGE_QTY_TARGET recalculates the target from corrected DPI.\n          update'));
   assert.ok(result.includes("success = 1;\n    message = 'Товар заблокирован. Разница отправлена в планирование';\n    suspend;\n  end"));
+  assert.ok(!result.includes('smallint;\n\n  declare'));
+  assert.ok(result.includes('where id = :idtaskitem;\n\n      update'));
+  assert.ok(result.includes('where id = :iddoc;\n\n      update'));
+  assert.ok(!/distinct\s*\n\s*from 92/i.test(result));
+  assert.ok(result.includes('          update or insert into taskitem_plane_stage ('));
+  assert.ok(result.includes('\n          values ('));
   assert.equal(result, fmt(result));
   const signature = text => lex(text).map(t => t.kind === 'word' ? t.upper : t.value);
   assert.deepEqual(signature(result), signature(sql));
+});
+
+test('IS DISTINCT FROM and UPDATE OR INSERT remain indivisible SQL constructs', () => {
+  for (const expression of ['is distinct from', 'is not distinct from', 'is /* note */ distinct from']) {
+    const result = fmt('select a from t where a ' + expression + ' 92;');
+    assert.ok(result.includes(expression + ' 92'));
+    assert.equal(result, fmt(result));
+  }
+  const sql = 'begin if (x is null) then\n-- attached\nupdate or insert into t(a,b) values(1,2) matching(a); end';
+  const result = fmt(sql);
+  assert.ok(result.includes('-- attached\n    update or insert into t ('));
+  assert.ok(result.includes('\n    values ('));
+  assert.ok(result.includes('\n    matching ('));
+  assert.ok(!/update\s*\n\s*or insert/.test(result));
+  assert.equal(result, fmt(result));
 });
 
 if (process.argv[2]) test('Supplied SQL file: token preservation and idempotence', () => {
